@@ -80,6 +80,25 @@ func TestPairProgrammerHasConversationalTone(t *testing.T) {
 	}
 }
 
+// TestMentorCoachHasPrinciples 验证 mentor-coach 变体含"温暖 + push back + 边界感"三层。
+func TestMentorCoachHasPrinciples(t *testing.T) {
+	v := mentorCoachVariant()
+	_ = v.Parse()
+	out := v.Render(RenderInputs{OS: "linux", CWD: "/tmp", Mode: "suggest", Budget: "0", ModeAdvice: "advice"})
+	for _, marker := range []string{
+		"温暖",     // 温暖
+		"push back", // 建设性反对
+		"不讨好",    // 反对讨好
+		"用户不友善",  // 边界处置
+		"事实错",    // push back 类型
+		"警告",     // 边界动作
+	} {
+		if !strings.Contains(out, marker) {
+			t.Errorf("mentor-coach missing principle: %q", marker)
+		}
+	}
+}
+
 func tail(s string, n int) string {
 	if len(s) <= n {
 		return s
