@@ -128,6 +128,70 @@ codecast exec "解释这个项目的架构"
 | `--session-budget` | — | `0` | 每会话预算上限（USD） |
 | `--log-level` | — | `info` | 日志级别 |
 | `--log-format` | — | `text` | 日志格式 |
+| `--prompt-variant` | — | `default` | 系统提示词变体（`default` / `concise` / `safety-first` / 用户自定义） |
+| `--prompt-strategy` | — | `fixed` | 变体选择策略（`fixed` / `round-robin` / `weighted`） |
+| `--prompt-weight` | — | — | 加权选择权重，可多次指定：`--prompt-weight default=5 --prompt-weight concise=1` |
+| `--prompt-project-dir` | — | `.codecast/prompts` | 项目级 prompts 目录 |
+
+## 提示词 A/B 框架
+
+Codecast 内置提示词 **A/B 测试与外部化框架**，可热替换系统提示词，无需重编译。
+
+### 三种内置变体
+
+| 变体 | 适用场景 |
+|------|----------|
+| `default` | 平衡：完整工具指南 + 关键反模式（推荐） |
+| `concise` | 极简：节省 token，适合小模型 / 长任务 |
+| `safety-first` | 保守：反模式强化 + 强制验证步骤 |
+
+### 使用方式
+
+```bash
+# CLI flag（最高优先级）
+codecast --prompt-variant concise
+codecast --prompt-strategy weighted --prompt-weight default=5 --prompt-weight concise=1
+
+# 环境变量
+export CODECAST_PROMPT_VARIANT=safety-first
+codecast
+
+# 配置文件 ~/.codecast/config.yaml
+prompt_variant: concise
+prompt_strategy: weighted
+prompt_weights:
+  default: 5
+  concise: 1
+```
+
+### 自定义变体
+
+把 YAML 放到以下任一目录（后加载覆盖先加载）：
+
+1. **编译时嵌入**（仅源码修改）— 见 `internal/promptab/embedded.go`
+2. **用户级** `~/.codecast/prompts/*.yaml` — 个人定制
+3. **项目级** `.codecast/prompts/*.yaml` — 团队共享，自动按 cwd 加载
+
+YAML 格式：
+
+```yaml
+name: my-variant           # 必填，variant 名
+description: 简要描述
+author: 你的名字
+sections:
+  identity: |              # 这些 section key 必须存在（值可空，会被跳过）
+    你是 ...
+  tool_guide: |
+    ...
+  anti_patterns: |
+    ...
+  workflow: |
+    ...
+  output_format: |
+    ...
+```
+
+支持的 `{{var}}` 变量：`os` / `cwd` / `mode` / `budget` / `mode_advice` / `file_tree` / `project_rules`，以及 `$ARGUMENTS` / `$ARG0`..`$ARG9`。
 
 ## MCP 服务器模板
 

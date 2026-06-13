@@ -71,7 +71,7 @@ func BenchmarkProcess(b *testing.B) {
 func BenchmarkBuildSystemPrompt(b *testing.B) {
 	b.Run("without_indexer", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			buildSystemPrompt("linux", "/tmp/project", "use tabs for indentation", nil)
+			buildSystemPrompt("linux", "/tmp/project", "use tabs for indentation", nil, "suggest", 0)
 		}
 	})
 
@@ -90,7 +90,7 @@ func BenchmarkBuildSystemPrompt(b *testing.B) {
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			buildSystemPrompt("linux", tmpDir, "use tabs for indentation", idx)
+			buildSystemPrompt("linux", tmpDir, "use tabs for indentation", idx, "auto-edit", 5.0)
 		}
 	})
 }

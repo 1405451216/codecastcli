@@ -59,6 +59,11 @@ func init() {
 	// F8: 成本预算控制
 	rootCmd.PersistentFlags().Float64("daily-budget", 0, "每日预算上限（USD，0=不限制）")
 	rootCmd.PersistentFlags().Float64("session-budget", 0, "每会话预算上限（USD，0=不限制）")
+	// Prompt A/B 框架（见 internal/promptab）
+	rootCmd.PersistentFlags().String("prompt-variant", "", "系统提示词变体 (default/concise/safety-first/用户自定义)")
+	rootCmd.PersistentFlags().String("prompt-strategy", "fixed", "变体选择策略 (fixed/round-robin/weighted)")
+	rootCmd.PersistentFlags().String("prompt-project-dir", "", "项目级 prompts 目录（默认 .codecast/prompts）")
+	rootCmd.PersistentFlags().StringToInt("prompt-weight", map[string]int{}, "加权选择权重，可多次指定，如 --prompt-weight default=5")
 
 	if err := viper.BindPFlag("model", rootCmd.PersistentFlags().Lookup("model")); err != nil {
 		fmt.Fprintln(os.Stderr, "绑定 model flag 失败:", err)
@@ -110,6 +115,18 @@ func init() {
 	}
 	if err := viper.BindPFlag("session_budget_usd", rootCmd.PersistentFlags().Lookup("session-budget")); err != nil {
 		fmt.Fprintln(os.Stderr, "绑定 session-budget flag 失败:", err)
+	}
+	if err := viper.BindPFlag("prompt_variant", rootCmd.PersistentFlags().Lookup("prompt-variant")); err != nil {
+		fmt.Fprintln(os.Stderr, "绑定 prompt-variant flag 失败:", err)
+	}
+	if err := viper.BindPFlag("prompt_strategy", rootCmd.PersistentFlags().Lookup("prompt-strategy")); err != nil {
+		fmt.Fprintln(os.Stderr, "绑定 prompt-strategy flag 失败:", err)
+	}
+	if err := viper.BindPFlag("prompt_project_dir", rootCmd.PersistentFlags().Lookup("prompt-project-dir")); err != nil {
+		fmt.Fprintln(os.Stderr, "绑定 prompt-project-dir flag 失败:", err)
+	}
+	if err := viper.BindPFlag("prompt_weights", rootCmd.PersistentFlags().Lookup("prompt-weight")); err != nil {
+		fmt.Fprintln(os.Stderr, "绑定 prompt-weight flag 失败:", err)
 	}
 
 	// 初始化日志系统

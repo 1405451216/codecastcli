@@ -36,6 +36,15 @@ type Config struct {
 	SessionBudgetUSD  float64 `yaml:"session_budget_usd,omitempty"`
 	DailyTokenLimit   int     `yaml:"daily_token_limit,omitempty"`
 	SessionTokenLimit int     `yaml:"session_token_limit,omitempty"`
+	// Prompt A/B 框架（见 internal/promptab）
+	//  - PromptVariant: 固定选择某 variant（"default" / "concise" / "safety-first" / 用户自定义）
+	//  - PromptStrategy: 选择策略（fixed / round-robin / weighted）
+	//  - PromptWeights: 加权选择的权重（variant name → weight）
+	PromptVariant   string         `yaml:"prompt_variant,omitempty"`
+	PromptStrategy  string         `yaml:"prompt_strategy,omitempty"`
+	PromptWeights   map[string]int `yaml:"prompt_weights,omitempty"`
+	// PromptProjectDir: 项目级 prompts 目录覆盖（默认 .codecast/prompts）
+	PromptProjectDir string `yaml:"prompt_project_dir,omitempty"`
 }
 
 // MaskedAPIKey 返回遮蔽后的 API Key（仅显示前4位和后4位）
@@ -94,6 +103,13 @@ func Load() *Config {
 	if v := os.Getenv("CODECAST_AUTO_CHECKPOINT"); v == "true" || v == "1" {
 		cfg.AutoCheckpoint = true
 	}
+	// Prompt A/B 框架
+	if v := os.Getenv("CODECAST_PROMPT_VARIANT"); v != "" {
+		cfg.PromptVariant = v
+	}
+	if v := os.Getenv("CODECAST_PROMPT_STRATEGY"); v != "" {
+		cfg.PromptStrategy = v
+	}
 
 	// Viper 覆盖（命令行 flags 绑定的值）
 	if viperVal := getViperString("model"); viperVal != "" {
@@ -137,6 +153,32 @@ func Load() *Config {
 	}
 	if viperVal := getViperInt("session_token_limit"); viperVal > 0 {
 		cfg.SessionTokenLimit = viperVal
+	}
+	if viperVal := getViperString("prompt_variant"); viperVal != "" {
+		cfg.PromptVariant = viperVal
+	}
+	if viperVal := getViperString("prompt_strategy"); viperVal != "" {
+		cfg.PromptStrategy = viperVal
+	}
+	if viperVal := getViperString("prompt_project_dir"); viperVal != "" {
+		cfg.PromptProjectDir = viperVal
+	}
+	if viper.IsSet("prompt_weights") {
+		// viper 解析 map[string]int 需要通过 AllSettings
+		all := viper.AllSettings()
+		if w, ok := all["prompt_weights"].(map[string]interface{}); ok {
+			cfg.PromptWeights = make(map[string]int, len(w))
+			for k, v := range w {
+				switch n := v.(type) {
+				case int:
+					cfg.PromptWeights[k] = n
+				case int64:
+					cfg.PromptWeights[k] = int(n)
+				case float64:
+					cfg.PromptWeights[k] = int(n)
+				}
+			}
+		}
 	}
 
 	return cfg

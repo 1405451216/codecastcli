@@ -29,7 +29,7 @@ func TestBuildSystemPromptWithIndexer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompt := buildSystemPrompt("linux", tmpDir, "", idx)
+	prompt := buildSystemPrompt("linux", tmpDir, "", idx, "suggest", 0)
 
 	// 验证文件树被注入
 	if !strings.Contains(prompt, "代码库结构") {
@@ -45,9 +45,9 @@ func TestBuildSystemPromptWithIndexer(t *testing.T) {
 
 // TestBuildSystemPromptWithoutIndexer 测试无索引器时的系统提示词
 func TestBuildSystemPromptWithoutIndexer(t *testing.T) {
-	prompt := buildSystemPrompt("linux", "/tmp", "测试规则", nil)
+	prompt := buildSystemPrompt("linux", "/tmp", "测试规则", nil, "suggest", 0)
 
-	if !strings.Contains(prompt, "当前操作系统: linux") {
+	if !strings.Contains(prompt, "操作系统: linux") {
 		t.Error("应包含操作系统信息")
 	}
 	if !strings.Contains(prompt, "测试规则") {
@@ -60,7 +60,7 @@ func TestBuildSystemPromptWithoutIndexer(t *testing.T) {
 
 // TestBuildSystemPromptWithProjectRules 测试系统提示词包含项目规则
 func TestBuildSystemPromptWithProjectRules(t *testing.T) {
-	prompt := buildSystemPrompt("windows", "C:\\project", "使用 Tab 缩进", nil)
+	prompt := buildSystemPrompt("windows", "C:\\project", "使用 Tab 缩进", nil, "full-auto", 0)
 
 	if !strings.Contains(prompt, "项目规则") {
 		t.Error("应包含项目规则部分")

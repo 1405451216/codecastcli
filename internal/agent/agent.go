@@ -175,7 +175,22 @@ func newAgent(cfg *config.Config, sessionID string) (*CodecastAgent, error) {
 	ui.StopSpinner()
 
 	// 创建系统提示词（注入项目规则 + 代码库文件树）
-	systemPrompt := buildSystemPrompt(runtime.GOOS, getCurrentDir(), projectRules, idx)
+	// 优先走 PromptResolver（支持 YAML 外部化变体 + A/B 策略），失败则回落到 buildSystemPrompt。
+	resolver := DefaultResolver()
+	// 加载项目级 .codecast/prompts/（cwd 或 cfg.PromptProjectDir 指定的目录）
+	projectPromptsDir := cfg.PromptProjectDir
+	if projectPromptsDir == "" {
+		projectPromptsDir = ".codecast/prompts"
+	}
+	if abs, err := filepath.Abs(projectPromptsDir); err == nil {
+		_ = resolver.LoadProjectDir(abs)
+	}
+	resolver.SetSelector(SelectorConfig{
+		Variant:  cfg.PromptVariant,
+		Strategy: cfg.PromptStrategy,
+		Weights:  cfg.PromptWeights,
+	}.ToSelector())
+	systemPrompt := resolver.Build(runtime.GOOS, getCurrentDir(), projectRules, idx, cfg.PermissionMode, cfg.SessionBudgetUSD)
 
 	scopes := cfg.Scopes
 	if len(scopes) == 0 {
@@ -545,7 +560,22 @@ func (a *CodecastAgent) SwitchModel(modelID string) error {
 	hooks.Register(ap.HookBeforeTool, buildCheckpointHook(a.checkpointMgr))
 
 	projectRules := loadProjectRules()
-	systemPrompt := buildSystemPrompt(runtime.GOOS, getCurrentDir(), projectRules, a.indexer)
+	// F-09 修复：SwitchModel 重建时也走 PromptResolver，让运行时切换后
+	// 依然使用与 newAgent 一致的 prompt 选择策略。
+	resolver := DefaultResolver()
+	projectPromptsDir := a.config.PromptProjectDir
+	if projectPromptsDir == "" {
+		projectPromptsDir = ".codecast/prompts"
+	}
+	if abs, err := filepath.Abs(projectPromptsDir); err == nil {
+		_ = resolver.LoadProjectDir(abs)
+	}
+	resolver.SetSelector(SelectorConfig{
+		Variant:  a.config.PromptVariant,
+		Strategy: a.config.PromptStrategy,
+		Weights:  a.config.PromptWeights,
+	}.ToSelector())
+	systemPrompt := resolver.Build(runtime.GOOS, getCurrentDir(), projectRules, a.indexer, a.config.PermissionMode, a.config.SessionBudgetUSD)
 
 	scopes := a.config.Scopes
 	if len(scopes) == 0 {
@@ -683,54 +713,6 @@ func (a *CodecastAgent) Close() error {
 		return a.memory.Close()
 	}
 	return nil
-}
-
-// buildSystemPrompt 动态组装系统提示词（DI-2: 注入代码库文件树）
-func buildSystemPrompt(goos, cwd, projectRules string, idx *indexer.Indexer) string {
-	var sb strings.Builder
-
-	sb.WriteString(`你是一个专业的 AI 编程助手，可以帮助用户完成各种软件开发任务。
-
-你可以使用以下工具：
-- 文件系统操作（读写文件、列出目录）
-- edit_file: 通过精确字符串替换编辑文件（推荐！修改现有文件时优先使用）
-- grep_search: 搜索文件内容（支持正则）
-- glob_search: 按文件名模式搜索文件
-- Shell 命令执行（编译、运行、git 操作等）
-- Web HTTP 请求
-
-编辑文件时的最佳实践：
-1. 优先使用 edit_file 而非 write_file，仅输出变更部分
-2. old_string 必须在文件中唯一匹配，如不唯一请提供更多上下文
-3. 编辑前先用 read_file 读取文件确认当前内容
-
-注意事项：
-1. 执行命令前请确认安全性
-2. 修改文件前建议先读取原文件
-3. 保持代码风格一致
-4. 提供清晰的解释和说明
-`)
-
-	sb.WriteString(fmt.Sprintf("\n当前操作系统: %s\n当前工作目录: %s\n", goos, cwd))
-
-	// 注入代码库文件树（DI-2）
-	if idx != nil {
-		if fileTree := idx.GetFileTree(); fileTree != "" {
-			sb.WriteString("\n=== 代码库结构 ===\n")
-			sb.WriteString(fileTree)
-			sb.WriteString("=== 代码库结构结束 ===\n")
-			sb.WriteString("\n请参考上述代码库结构来理解项目，优先使用已有文件而非创建新文件。")
-		}
-	}
-
-	if projectRules != "" {
-		sb.WriteString("\n=== 项目规则 ===\n")
-		sb.WriteString(projectRules)
-		sb.WriteString("\n=== 规则结束 ===\n")
-		sb.WriteString("\n请严格遵守上述项目规则。")
-	}
-
-	return sb.String()
 }
 
 func getCurrentDir() string {
