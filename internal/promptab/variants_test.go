@@ -22,7 +22,11 @@ func TestEmbeddedVariantsLoad(t *testing.T) {
 			t.Errorf("variant %q missing identity section", v.Name)
 		}
 	}
-	for _, want := range []string{"default", "concise", "safety-first", "claude-style", "code-reviewer", "pair-programmer"} {
+	for _, want := range []string{
+		"default", "concise", "safety-first",
+		"claude-style", "code-reviewer", "pair-programmer",
+		"decision-tree", "self-check", "scope-guard", "mcp-router",
+	} {
 		if !names[want] {
 			t.Errorf("missing embedded variant %q", want)
 		}
