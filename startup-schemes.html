@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodecastCLI 启动动画方案对比</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #050508;
+    color: #ccc;
+    font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 60px;
+    padding: 40px 20px;
+  }
+  h2 {
+    font-size: 14px;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    text-align: center;
+  }
+  .scheme {
+    width: 100%;
+    max-width: 800px;
+    border: 1px solid rgba(100,100,140,0.15);
+    border-radius: 16px;
+    overflow: hidden;
+    background: rgba(10,10,15,0.8);
+  }
+  .scheme-header {
+    padding: 16px 24px;
+    border-bottom: 1px solid rgba(100,100,140,0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .scheme-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: #888;
+  }
+  .scheme-badge {
+    font-size: 10px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+  .badge-hot { background: rgba(239,68,68,0.15); color: #ef4444; }
+  .badge-cool { background: rgba(99,102,241,0.15); color: #818cf8; }
+  .badge-clean { background: rgba(34,197,94,0.15); color: #22c55e; }
+  .preview-area {
+    height: 320px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .desc {
+    padding: 16px 24px;
+    font-size: 12px;
+    color: #666;
+    line-height: 1.8;
+    border-top: 1px solid rgba(100,100,140,0.1);
+  }
+  .desc strong { color: #999; }
+
+  /* ===== 方案A: 神经网络脉冲 ===== */
+  .neural-canvas {
+    position: absolute;
+    inset: 0;
+  }
+  .neural-node {
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    animation: neuralPulse 2s ease-in-out infinite;
+  }
+  .neural-link {
+    position: absolute;
+    height: 1px;
+    transform-origin: left center;
+    animation: linkGlow 2s ease-in-out infinite;
+  }
+  @keyframes neuralPulse {
+    0%, 100% { transform: scale(1); opacity: 0.4; }
+    50% { transform: scale(2); opacity: 1; }
+  }
+  @keyframes linkGlow {
+    0%, 100% { opacity: 0.1; }
+    50% { opacity: 0.5; }
+  }
+  .neural-logo {
+    position: relative;
+    z-index: 10;
+    font-size: 56px;
+    font-weight: 900;
+    letter-spacing: 8px;
+    background: linear-gradient(135deg, #6366f1, #06b6d4, #a855f7, #6366f1);
+    background-size: 300% 300%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: neuralGradient 4s ease-in-out infinite;
+    filter: drop-shadow(0 0 30px rgba(99,102,241,0.5));
+  }
+  @keyframes neuralGradient {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+  }
+  .neural-tag {
+    position: relative;
+    z-index: 10;
+    font-size: 11px;
+    color: #444;
+    margin-top: 12px;
+    letter-spacing: 3px;
+  }
+
+  /* ===== 方案B: 终端黑客风 ===== */
+  .terminal-bg {
+    position: absolute;
+    inset: 0;
+    padding: 20px;
+    font-size: 10px;
+    color: rgba(34,197,94,0.08);
+    line-height: 1.4;
+    overflow: hidden;
+    word-break: break-all;
+    animation: terminalScroll 20s linear infinite;
+  }
+  @keyframes terminalScroll {
+    0% { transform: translateY(0); }
+    100% { transform: translateY(-50%); }
+  }
+  .terminal-frame {
+    position: relative;
+    z-index: 10;
+    width: 420px;
+    border: 1px solid rgba(34,197,94,0.3);
+    border-radius: 8px;
+    overflow: hidden;
+    background: rgba(0,0,0,0.85);
+    box-shadow: 0 0 40px rgba(34,197,94,0.1), inset 0 0 1px rgba(34,197,94,0.5);
+  }
+  .terminal-titlebar {
+    background: rgba(34,197,94,0.08);
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-bottom: 1px solid rgba(34,197,94,0.2);
+  }
+  .terminal-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+  .terminal-dot.r { background: #ef4444; }
+  .terminal-dot.y { background: #eab308; }
+  .terminal-dot.g { background: #22c55e; }
+  .terminal-title {
+    font-size: 10px;
+    color: #555;
+    margin-left: 8px;
+  }
+  .terminal-body {
+    padding: 16px;
+    font-size: 11px;
+    line-height: 1.8;
+  }
+  .terminal-line {
+    opacity: 0;
+    animation: termLineIn 0.3s forwards;
+  }
+  .terminal-line .prompt { color: #22c55e; }
+  .terminal-line .cmd { color: #e0e0e0; }
+  .terminal-line .output { color: #666; }
+  .terminal-line .success { color: #22c55e; }
+  .terminal-line .highlight { color: #facc15; }
+  @keyframes termLineIn {
+    to { opacity: 1; }
+  }
+  .term-cursor {
+    display: inline-block;
+    width: 7px;
+    height: 13px;
+    background: #22c55e;
+    animation: blink 1s step-end infinite;
+    vertical-align: middle;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ===== 方案C: 能量球 ===== */
+  .orb-container {
+    position: relative;
+    width: 200px;
+    height: 200px;
+  }
+  .orb-ring {
+    position: absolute;
+    inset: 0;
+    border: 2px solid transparent;
+    border-radius: 50%;
+    animation: orbSpin 3s linear infinite;
+  }
+  .orb-ring:nth-child(1) {
+    border-top-color: #6366f1;
+    border-right-color: #6366f1;
+    animation-duration: 3s;
+  }
+  .orb-ring:nth-child(2) {
+    inset: 15px;
+    border-bottom-color: #a855f7;
+    border-left-color: #a855f7;
+    animation-duration: 4s;
+    animation-direction: reverse;
+  }
+  .orb-ring:nth-child(3) {
+    inset: 30px;
+    border-top-color: #06b6d4;
+    border-right-color: #06b6d4;
+    animation-duration: 2.5s;
+  }
+  .orb-ring:nth-child(4) {
+    inset: 45px;
+    border-bottom-color: #d946ef;
+    border-left-color: #d946ef;
+    animation-duration: 2s;
+    animation-direction: reverse;
+  }
+  @keyframes orbSpin {
+    to { transform: rotate(360deg); }
+  }
+  .orb-core {
+    position: absolute;
+    inset: 55px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%,
+      rgba(99,102,241,0.8),
+      rgba(168,85,247,0.6),
+      rgba(6,182,212,0.4),
+      transparent);
+    animation: orbPulse 1.5s ease-in-out infinite;
+    box-shadow: 0 0 60px rgba(99,102,241,0.4), 0 0 120px rgba(168,85,247,0.2);
+  }
+  @keyframes orbPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.15); }
+  }
+  .orb-logo-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+    font-weight: 900;
+    letter-spacing: 4px;
+    color: white;
+    text-shadow: 0 0 20px rgba(255,255,255,0.5);
+    z-index: 20;
+    opacity: 0;
+    animation: orbLogoIn 1s 1s forwards;
+  }
+  @keyframes orbLogoIn {
+    to { opacity: 1; }
+  }
+
+  /* ===== 方案D: 矩阵雨 ===== */
+  .matrix-canvas {
+    position: absolute;
+    inset: 0;
+  }
+  .matrix-col {
+    position: absolute;
+    top: 0;
+    font-size: 12px;
+    line-height: 1.2;
+    color: #22c55e;
+    writing-mode: vertical-lr;
+    animation: matrixFall linear infinite;
+    opacity: 0;
+  }
+  @keyframes matrixFall {
+    0% { transform: translateY(-100%); opacity: 0; }
+    10% { opacity: 0.4; }
+    90% { opacity: 0.4; }
+    100% { transform: translateY(320px); opacity: 0; }
+  }
+  .matrix-center {
+    position: relative;
+    z-index: 10;
+    text-align: center;
+  }
+  .matrix-logo {
+    font-size: 48px;
+    font-weight: 900;
+    letter-spacing: 6px;
+    color: #22c55e;
+    text-shadow: 0 0 10px #22c55e, 0 0 40px rgba(34,197,94,0.4), 0 0 80px rgba(34,197,94,0.2);
+    animation: matrixGlitch 3s ease-in-out infinite;
+  }
+  @keyframes matrixGlitch {
+    0%, 90%, 100% { transform: translate(0); text-shadow: 0 0 10px #22c55e, 0 0 40px rgba(34,197,94,0.4); }
+    92% { transform: translate(-3px, 1px); text-shadow: 3px 0 #f00, -3px 0 #0ff; }
+    94% { transform: translate(3px, -1px); text-shadow: -3px 0 #f00, 3px 0 #0ff; }
+    96% { transform: translate(0); }
+  }
+  .matrix-sub {
+    font-size: 11px;
+    color: rgba(34,197,94,0.4);
+    margin-top: 8px;
+    letter-spacing: 4px;
+  }
+
+  /* ===== 方案E: 全息投影 ===== */
+  .holo-container {
+    position: relative;
+    width: 300px;
+    height: 250px;
+    perspective: 600px;
+  }
+  .holo-base {
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%) rotateX(60deg);
+    width: 200px;
+    height: 200px;
+    border: 2px solid rgba(99,102,241,0.3);
+    border-radius: 8px;
+    background: rgba(99,102,241,0.03);
+    box-shadow: 0 0 30px rgba(99,102,241,0.1), inset 0 0 30px rgba(99,102,241,0.05);
+  }
+  .holo-grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(99,102,241,0.1) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(99,102,241,0.1) 1px, transparent 1px);
+    background-size: 20px 20px;
+    animation: holoGridMove 2s linear infinite;
+  }
+  @keyframes holoGridMove {
+    to { background-position: 20px 20px; }
+  }
+  .holo-text {
+    position: absolute;
+    bottom: 60px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 42px;
+    font-weight: 900;
+    letter-spacing: 6px;
+    background: linear-gradient(180deg, rgba(99,102,241,0.9), rgba(168,85,247,0.3), transparent);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: holoFloat 3s ease-in-out infinite;
+    filter: drop-shadow(0 0 15px rgba(99,102,241,0.3));
+  }
+  @keyframes holoFloat {
+    0%, 100% { transform: translateX(-50%) translateY(0); }
+    50% { transform: translateX(-50%) translateY(-10px); }
+  }
+  .holo-scan {
+    position: absolute;
+    left: 10%;
+    width: 80%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(99,102,241,0.6), transparent);
+    animation: holoScan 2s ease-in-out infinite;
+  }
+  @keyframes holoScan {
+    0% { bottom: 0; }
+    100% { bottom: 100%; }
+  }
+  .holo-particles {
+    position: absolute;
+    inset: 0;
+  }
+  .holo-particle {
+    position: absolute;
+    width: 3px;
+    height: 3px;
+    background: #6366f1;
+    border-radius: 50%;
+    animation: holoParticle 2s ease-out infinite;
+    opacity: 0;
+  }
+  @keyframes holoParticle {
+    0% { transform: translateY(0) scale(0); opacity: 0; }
+    20% { opacity: 0.8; }
+    100% { transform: translateY(-80px) scale(1); opacity: 0; }
+  }
+
+  /* 方案对比表 */
+  .comparison {
+    width: 100%;
+    max-width: 800px;
+    border: 1px solid rgba(100,100,140,0.15);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .comparison table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .comparison th {
+    background: rgba(30,30,50,0.8);
+    padding: 10px 16px;
+    text-align: left;
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-bottom: 1px solid rgba(100,100,140,0.1);
+  }
+  .comparison td {
+    padding: 10px 16px;
+    font-size: 12px;
+    color: #777;
+    border-bottom: 1px solid rgba(100,100,140,0.05);
+  }
+  .comparison tr:last-child td { border-bottom: none; }
+  .rating { color: #22c55e; }
+  .rating-mid { color: #eab308; }
+  .rating-low { color: #666; }
+</style>
+</head>
+<body>
+
+<h2>5 套启动动画方案预览</h2>
+
+<!-- 方案A -->
+<div class="scheme">
+  <div class="scheme-header">
+    <span class="scheme-name">A · 神经网络脉冲</span>
+    <span class="scheme-badge badge-hot">推荐</span>
+  </div>
+  <div class="preview-area">
+    <div class="neural-canvas" id="neuralCanvas"></div>
+    <div>
+      <div class="neural-logo">CODECAST</div>
+      <div class="neural-tag">AI-POWERED TERMINAL AGENT</div>
+    </div>
+  </div>
+  <div class="desc">
+    <strong>效果：</strong>背景有神经网络节点连线在脉冲呼吸，CODECAST 文字带多色渐变流动，外发光呼吸闪烁。<br>
+    <strong>感觉：</strong>科技感、AI感强，像神经网络在思考。不花哨但有生命力。<br>
+    <strong>实现：</strong>CSS 动画 + 少量 JS 生成节点，Go 用 <code>bubbletea</code> 或 <code>tcell</code> 实现。
+  </div>
+</div>
+
+<!-- 方案B -->
+<div class="scheme">
+  <div class="scheme-header">
+    <span class="scheme-name">B · 终端模拟器</span>
+    <span class="scheme-badge badge-cool">极客</span>
+  </div>
+  <div class="preview-area">
+    <div class="terminal-bg" id="termBg"></div>
+    <div class="terminal-frame">
+      <div class="terminal-titlebar">
+        <span class="terminal-dot r"></span>
+        <span class="terminal-dot y"></span>
+        <span class="terminal-dot g"></span>
+        <span class="terminal-title">codecast — zsh</span>
+      </div>
+      <div class="terminal-body">
+        <div class="terminal-line" style="animation-delay:0.2s"><span class="prompt">$ </span><span class="cmd">codecast</span></div>
+        <div class="terminal-line" style="animation-delay:0.6s"><span class="output">Loading AgentPrimordia framework...</span></div>
+        <div class="terminal-line" style="animation-delay:1.0s"><span class="output">Initializing tools: </span><span class="highlight">edit_file ✓ grep ✓ shell ✓</span></div>
+        <div class="terminal-line" style="animation-delay:1.4s"><span class="output">Connecting provider: </span><span class="highlight">OpenAI (gpt-4o)</span></div>
+        <div class="terminal-line" style="animation-delay:1.8s"><span class="success">✓ Agent ready. 13 providers loaded.</span></div>
+        <div class="terminal-line" style="animation-delay:2.2s"><span class="prompt">$ </span><span class="term-cursor"></span></div>
+      </div>
+    </div>
+  </div>
+  <div class="desc">
+    <strong>效果：</strong>一个完整的终端窗口，逐行输出启动日志，最后出现光标等待输入。<br>
+    <strong>感觉：</strong>最符合 CLI 工具的调性，极客味拉满。用户一看就知道这是个终端工具。<br>
+    <strong>实现：</strong>纯 CSS + 少量 JS，Go 用 <code>tcell</code> 逐行打印。
+  </div>
+</div>
+
+<!-- 方案C -->
+<div class="scheme">
+  <div class="scheme-header">
+    <span class="scheme-name">C · 能量球旋转</span>
+    <span class="scheme-badge badge-cool">炫酷</span>
+  </div>
+  <div class="preview-area">
+    <div class="orb-container">
+      <div class="orb-ring"></div>
+      <div class="orb-ring"></div>
+      <div class="orb-ring"></div>
+      <div class="orb-ring"></div>
+      <div class="orb-core"></div>
+      <div class="orb-logo-overlay">CC</div>
+    </div>
+  </div>
+  <div class="desc">
+    <strong>效果：</strong>4 层轨道环反向旋转，中心能量球脉动发光，CODECAST 从能量中浮现。<br>
+    <strong>感觉：</strong>很酷但偏游戏化，适合追求视觉冲击的场景。<br>
+    <strong>实现：</strong>纯 CSS，不需要 JS。
+  </div>
+</div>
+
+<!-- 方案D -->
+<div class="scheme">
+  <div class="scheme-header">
+    <span class="scheme-name">D · 矩阵数字雨</span>
+    <span class="scheme-badge badge-hot">推荐</span>
+  </div>
+  <div class="preview-area">
+    <div id="matrixRain"></div>
+    <div class="matrix-center">
+      <div class="matrix-logo">CODECAST</div>
+      <div class="matrix-sub">SYSTEM INITIALIZED</div>
+    </div>
+  </div>
+  <div class="desc">
+    <strong>效果：</strong>绿色数字雨从背景落下，CODECAST 文字带故障(Glitch)闪烁效果，绿光外发光。<br>
+    <strong>感觉：</strong>Matrix 致敬，黑客感极强。适合开发者社区传播。<br>
+    <strong>实现：</strong>纯 CSS 动画列，Go 用 <code>tcell</code> 绘制 Unicode 字符雨。
+  </div>
+</div>
+
+<!-- 方案E -->
+<div class="scheme">
+  <div class="scheme-header">
+    <span class="scheme-name">E · 全息投影</span>
+    <span class="scheme-badge badge-clean">高级</span>
+  </div>
+  <div class="preview-area">
+    <div class="holo-container">
+      <div class="holo-base"><div class="holo-grid"></div></div>
+      <div class="holo-particles" id="holoParticles"></div>
+      <div class="holo-text">CODECAST</div>
+      <div class="holo-scan"></div>
+    </div>
+  </div>
+  <div class="desc">
+    <strong>效果：</strong>底部全息底座带网格，文字悬浮在空中带扫描线，粒子从底座升腾。<br>
+    <strong>感觉：</strong>未来感、高级感最强，但实现复杂度也最高。<br>
+    <strong>实现：</strong>CSS perspective + 动画，Go 需要 <code>tcell</code> 多层渲染。
+  </div>
+</div>
+
+<!-- 对比表 -->
+<div class="comparison">
+  <table>
+    <thead>
+      <tr>
+        <th>方案</th>
+        <th>视觉冲击</th>
+        <th>CLI 契合度</th>
+        <th>实现难度</th>
+        <th>文件大小</th>
+        <th>推荐度</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>A · 神经网络</td>
+        <td class="rating">★★★★★</td>
+        <td class="rating">★★★★☆</td>
+        <td class="rating-mid">中等</td>
+        <td>~8KB</td>
+        <td class="rating">★★★★★</td>
+      </tr>
+      <tr>
+        <td>B · 终端模拟器</td>
+        <td class="rating">★★★★☆</td>
+        <td class="rating">★★★★★</td>
+        <td class="rating">简单</td>
+        <td>~4KB</td>
+        <td class="rating">★★★★★</td>
+      </tr>
+      <tr>
+        <td>C · 能量球</td>
+        <td class="rating">★★★★★</td>
+        <td class="rating-low">★★☆☆☆</td>
+        <td class="rating">简单</td>
+        <td>~3KB</td>
+        <td class="rating-mid">★★★☆☆</td>
+      </tr>
+      <tr>
+        <td>D · 矩阵雨</td>
+        <td class="rating">★★★★★</td>
+        <td class="rating">★★★★☆</td>
+        <td class="rating-mid">中等</td>
+        <td>~6KB</td>
+        <td class="rating">★★★★☆</td>
+      </tr>
+      <tr>
+        <td>E · 全息投影</td>
+        <td class="rating">★★★★★</td>
+        <td class="rating-mid">★★★☆☆</td>
+        <td class="rating-low">困难</td>
+        <td>~10KB</td>
+        <td class="rating-mid">★★★☆☆</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+// 生成神经网络节点
+(function(){
+  const canvas = document.getElementById('neuralCanvas');
+  const nodes = [];
+  for(let i=0;i<20;i++){
+    const n = document.createElement('div');
+    n.className='neural-node';
+    const x = 5+Math.random()*90;
+    const y = 5+Math.random()*90;
+    n.style.left=x+'%';
+    n.style.top=y+'%';
+    n.style.animationDelay=(Math.random()*2)+'s';
+    const colors=['#6366f1','#06b6d4','#a855f7'];
+    n.style.background=colors[i%3];
+    n.style.boxShadow=`0 0 10px ${colors[i%3]}`;
+    canvas.appendChild(n);
+    nodes.push({x,y});
+  }
+  // 连线
+  for(let i=0;i<nodes.length;i++){
+    for(let j=i+1;j<nodes.length;j++){
+      const dx=nodes[i].x-nodes[j].x;
+      const dy=nodes[i].y-nodes[j].y;
+      const dist=Math.sqrt(dx*dx+dy*dy);
+      if(dist<35){
+        const link=document.createElement('div');
+        link.className='neural-link';
+        const angle=Math.atan2(dy,dx)*180/Math.PI;
+        link.style.left=nodes[i].x+'%';
+        link.style.top=nodes[i].y+'%';
+        link.style.width=dist+'%';
+        link.style.transform=`rotate(${angle}deg)`;
+        link.style.background='linear-gradient(90deg,#6366f1,#a855f7)';
+        link.style.animationDelay=(Math.random()*2)+'s';
+        canvas.appendChild(link);
+      }
+    }
+  }
+})();
+
+// 生成终端背景
+(function(){
+  const bg=document.getElementById('termBg');
+  const lines=[];
+  const cmds=['sudo codecast exec "refactor auth"','git diff HEAD~3','docker ps -a','kubectl get pods','curl -X POST /api/v1/completions',
+    'go test ./... -race','terraform plan','codecast --auto-compact','codecast mcp connect github','codecast config wizard',
+    'ssh deploy@prod','codecast exec "explain this codebase"','codecast /plan "migrate to Go 1.22"',
+    'ps aux | grep codecast','htop','codecast version --full','codecast sandbox run --image go:1.22'];
+  for(let i=0;i<200;i++){
+    lines.push(cmds[Math.floor(Math.random()*cmds.length)]+' '+['--verbose','-n','2>&1','> /dev/null','&','2>/dev/null'][Math.floor(Math.random()*6)]);
+  }
+  bg.textContent=lines.join('\n')+lines.join('\n');
+})();
+
+// 生成矩阵雨
+(function(){
+  const rain=document.getElementById('matrixRain');
+  const chars='アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン0123456789ABCDEF';
+  const cols=Math.floor(window.innerWidth/20);
+  for(let i=0;i<cols;i++){
+    const col=document.createElement('div');
+    col.className='matrix-col';
+    col.style.left=(i*20)+'px';
+    col.style.animationDuration=(3+Math.random()*5)+'s';
+    col.style.animationDelay=(Math.random()*3)+'s';
+    let text='';
+    const len=8+Math.floor(Math.random()*12);
+    for(let j=0;j<len;j++){
+      text+=chars[Math.floor(Math.random()*chars.length)]+'\n';
+    }
+    col.textContent=text;
+    rain.appendChild(col);
+  }
+})();
+
+// 生成全息粒子
+(function(){
+  const container=document.getElementById('holoParticles');
+  for(let i=0;i<15;i++){
+    const p=document.createElement('div');
+    p.className='holo-particle';
+    p.style.left=(20+Math.random()*60)+'%';
+    p.style.bottom='0';
+    p.style.animationDelay=(Math.random()*2)+'s';
+    p.style.animationDuration=(1.5+Math.random()*1.5)+'s';
+    container.appendChild(p);
+  }
+})();
+</script>
+</body>
+</html>

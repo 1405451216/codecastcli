@@ -1,0 +1,193 @@
+{
+  "version": "v0.2.0",
+  "generated": "2026-06-13",
+  "description": "TUI 内的斜杠命令统一 schema。Go 侧 (cmd/commands.go) 与 TS 侧 (src/commands.ts) 都从本文件消费，避免双份硬编码。",
+  "commands": [
+    {
+      "name": "help",
+      "aliases": ["h"],
+      "description": "显示帮助",
+      "owner": "core"
+    },
+    {
+      "name": "quit",
+      "aliases": ["q", "exit"],
+      "description": "退出",
+      "owner": "core"
+    },
+    {
+      "name": "clear",
+      "aliases": [],
+      "description": "清除上下文",
+      "owner": "core"
+    },
+    {
+      "name": "compact",
+      "aliases": [],
+      "description": "压缩上下文",
+      "owner": "core"
+    },
+    {
+      "name": "tools",
+      "aliases": [],
+      "description": "查看工具",
+      "owner": "info"
+    },
+    {
+      "name": "models",
+      "aliases": [],
+      "description": "查看模型",
+      "owner": "info"
+    },
+    {
+      "name": "rules",
+      "aliases": [],
+      "description": "查看/重载项目规则",
+      "owner": "info"
+    },
+    {
+      "name": "stats",
+      "aliases": [],
+      "description": "查看统计",
+      "owner": "info"
+    },
+    {
+      "name": "hooks",
+      "aliases": [],
+      "description": "查看钩子配置",
+      "owner": "info"
+    },
+    {
+      "name": "index",
+      "aliases": [],
+      "description": "查看代码库索引",
+      "owner": "info"
+    },
+    {
+      "name": "sessions",
+      "aliases": [],
+      "description": "查看会话列表",
+      "owner": "session"
+    },
+    {
+      "name": "export",
+      "aliases": [],
+      "description": "导出会话 (使用 /export [filename])",
+      "owner": "session"
+    },
+    {
+      "name": "resume",
+      "aliases": [],
+      "description": "恢复会话",
+      "owner": "session"
+    },
+    {
+      "name": "plan",
+      "aliases": [],
+      "description": "规划任务 (Plan-Agent)",
+      "owner": "task"
+    },
+    {
+      "name": "delegate",
+      "aliases": [],
+      "description": "规划并执行任务 (双Agent协作)",
+      "owner": "task"
+    },
+    {
+      "name": "vision",
+      "aliases": [],
+      "description": "分析图片文件 (使用 /vision <path>)",
+      "owner": "task"
+    },
+    {
+      "name": "screenshot",
+      "aliases": [],
+      "description": "截图并分析",
+      "owner": "task"
+    },
+    {
+      "name": "pool",
+      "aliases": [],
+      "description": "Agent Pool 管理",
+      "owner": "resource"
+    },
+    {
+      "name": "plugins",
+      "aliases": [],
+      "description": "列出已加载插件",
+      "owner": "resource"
+    },
+    {
+      "name": "plugin",
+      "aliases": [],
+      "description": "插件管理 (list/install/unload)",
+      "owner": "resource"
+    },
+    {
+      "name": "model",
+      "aliases": [],
+      "description": "切换模型",
+      "owner": "resource"
+    },
+    {
+      "name": "sandbox",
+      "aliases": [],
+      "description": "沙箱管理 (status/build)",
+      "owner": "resource"
+    },
+    {
+      "name": "mcp",
+      "aliases": [],
+      "description": "MCP 服务器管理",
+      "owner": "resource"
+    },
+    {
+      "name": "mode",
+      "aliases": [],
+      "description": "切换权限模式",
+      "owner": "resource"
+    },
+    {
+      "name": "undo",
+      "aliases": [],
+      "description": "撤销最近文件修改",
+      "owner": "resource"
+    },
+    {
+      "name": "budget",
+      "aliases": [],
+      "description": "查看预算使用情况",
+      "owner": "resource"
+    },
+    {
+      "name": "config",
+      "aliases": [],
+      "description": "配置管理 (set/get/list/wizard)",
+      "owner": "v0.2.0"
+    },
+    {
+      "name": "cost",
+      "aliases": [],
+      "description": "成本管理 (summary/daily/list/clear)",
+      "owner": "v0.2.0"
+    },
+    {
+      "name": "session",
+      "aliases": [],
+      "description": "会话管理 (list/show/delete/export)",
+      "owner": "v0.2.0"
+    },
+    {
+      "name": "rag",
+      "aliases": [],
+      "description": "知识库 (index/query/chat)",
+      "owner": "v0.2.0"
+    },
+    {
+      "name": "workflow",
+      "aliases": [],
+      "description": "工作流 (pipeline/parallel/handoff)",
+      "owner": "v0.2.0"
+    }
+  ]
+}

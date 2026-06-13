@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodecastCLI 启动动画预览</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0f;
+    color: #e0e0e0;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .controls {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: rgba(20,20,30,0.9);
+    border: 1px solid rgba(100,100,140,0.3);
+    border-radius: 12px;
+    padding: 20px;
+    z-index: 100;
+    min-width: 220px;
+    backdrop-filter: blur(10px);
+  }
+  .controls h3 {
+    font-size: 12px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+  }
+  .control-group {
+    margin-bottom: 12px;
+  }
+  .control-group label {
+    display: block;
+    font-size: 11px;
+    color: #aaa;
+    margin-bottom: 4px;
+  }
+  .control-group select, .control-group input[type="range"] {
+    width: 100%;
+    background: rgba(30,30,50,0.8);
+    border: 1px solid rgba(100,100,140,0.3);
+    color: #ddd;
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+  }
+  .btn {
+    width: 100%;
+    padding: 8px;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    border: none;
+    color: white;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    margin-top: 8px;
+    transition: opacity 0.2s;
+  }
+  .btn:hover { opacity: 0.85; }
+
+  .stage {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    position: relative;
+  }
+
+  /* 背景粒子 */
+  .bg-particles {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .particle {
+    position: absolute;
+    width: 2px;
+    height: 2px;
+    border-radius: 50%;
+    animation: float linear infinite;
+    opacity: 0;
+  }
+  @keyframes float {
+    0% { transform: translateY(100vh); opacity: 0; }
+    10% { opacity: 0.6; }
+    90% { opacity: 0.6; }
+    100% { transform: translateY(-10vh); opacity: 0; }
+  }
+
+  /* Logo 区域 */
+  .logo-container {
+    position: relative;
+    text-align: center;
+  }
+
+  .logo-text {
+    font-size: 72px;
+    font-weight: 900;
+    letter-spacing: 12px;
+    position: relative;
+    display: inline-block;
+  }
+  .logo-text .char {
+    display: inline-block;
+    opacity: 0;
+    transform: translateY(20px);
+    animation: charIn 0.4s forwards;
+  }
+  @keyframes charIn {
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* 渐变发光 */
+  .gradient-glow {
+    background: linear-gradient(90deg,
+      #6366f1, #8b5cf6, #a855f7, #d946ef, #6366f1, #8b5cf6);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: gradientShift 3s ease-in-out infinite;
+    filter: drop-shadow(0 0 20px rgba(99,102,241,0.4));
+  }
+  @keyframes gradientShift {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+  }
+
+  /* 外发光层 */
+  .logo-container::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 120%;
+    height: 200%;
+    background: radial-gradient(ellipse, rgba(99,102,241,0.15) 0%, transparent 70%);
+    pointer-events: none;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.5; transform: translate(-50%, -50%) scale(1); }
+    50% { opacity: 1; transform: translate(-50%, -50%) scale(1.05); }
+  }
+
+  /* 副标题 */
+  .subtitle {
+    font-size: 14px;
+    color: #888;
+    margin-top: 16px;
+    letter-spacing: 4px;
+    opacity: 0;
+    animation: fadeIn 0.8s 1.5s forwards;
+  }
+  @keyframes fadeIn {
+    to { opacity: 1; }
+  }
+
+  /* 版本号 */
+  .version {
+    font-size: 12px;
+    color: #555;
+    margin-top: 8px;
+    opacity: 0;
+    animation: fadeIn 0.8s 2s forwards;
+  }
+
+  /* 加载条 */
+  .loading-bar-container {
+    margin-top: 40px;
+    width: 300px;
+    height: 3px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 2px;
+    overflow: hidden;
+    opacity: 0;
+    animation: fadeIn 0.5s 2.5s forwards;
+  }
+  .loading-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #6366f1, #a855f7, #d946ef);
+    border-radius: 2px;
+    animation: loadProgress 1.5s 2.5s ease-out forwards;
+  }
+  @keyframes loadProgress {
+    0% { width: 0%; }
+    30% { width: 40%; }
+    60% { width: 70%; }
+    90% { width: 90%; }
+    100% { width: 100%; }
+  }
+
+  /* 加载完成提示 */
+  .ready-msg {
+    margin-top: 20px;
+    font-size: 12px;
+    color: #6366f1;
+    opacity: 0;
+    animation: fadeIn 0.5s 4.2s forwards;
+  }
+  .ready-msg::before {
+    content: '✓ ';
+    color: #22c55e;
+  }
+
+  /* 扫描线效果 */
+  .scanline {
+    position: absolute;
+    left: -10%;
+    top: 0;
+    width: 120%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(99,102,241,0.3), transparent);
+    animation: scanDown 2s 1s ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes scanDown {
+    0% { top: -5%; }
+    100% { top: 105%; }
+  }
+
+  /* 光标闪烁 */
+  .cursor {
+    display: inline-block;
+    width: 3px;
+    height: 60px;
+    background: #6366f1;
+    margin-left: 8px;
+    vertical-align: middle;
+    animation: blink 0.8s step-end infinite;
+    opacity: 0;
+    animation: blink 0.8s step-end infinite, fadeIn 0.1s 0.3s forwards;
+  }
+  @keyframes blink {
+    50% { opacity: 0; }
+  }
+
+  /* 模式选择 */
+  .modes {
+    margin-top: 30px;
+    display: flex;
+    gap: 12px;
+    opacity: 0;
+    animation: fadeIn 0.5s 3s forwards;
+  }
+  .mode-tag {
+    padding: 4px 12px;
+    border: 1px solid rgba(100,100,140,0.3);
+    border-radius: 4px;
+    font-size: 10px;
+    color: #666;
+    letter-spacing: 1px;
+  }
+  .mode-tag.active {
+    border-color: rgba(99,102,241,0.5);
+    color: #8b5cf6;
+    background: rgba(99,102,241,0.05);
+  }
+</style>
+</head>
+<body>
+
+<div class="bg-particles" id="particles"></div>
+
+<div class="stage">
+  <div class="logo-container">
+    <div class="scanline"></div>
+    <div class="logo-text gradient-glow" id="logo"></div>
+    <span class="cursor"></span>
+  </div>
+  <div class="subtitle">AI-POWERED TERMINAL AGENT</div>
+  <div class="version">v0.1.0</div>
+  <div class="loading-bar-container">
+    <div class="loading-bar"></div>
+  </div>
+  <div class="ready-msg">Initializing agent...</div>
+  <div class="modes">
+    <span class="mode-tag active">INTERACTIVE</span>
+    <span class="mode-tag">HEADLESS</span>
+    <span class="mode-tag">STREAM</span>
+  </div>
+</div>
+
+<div class="controls">
+  <h3>控制面板</h3>
+  <div class="control-group">
+    <label>配色主题</label>
+    <select id="themeSelect" onchange="changeTheme(this.value)">
+      <option value="purple">紫色 (默认)</option>
+      <option value="cyan">青色</option>
+      <option value="orange">橙色</option>
+      <option value="green">绿色</option>
+    </select>
+  </div>
+  <div class="control-group">
+    <label>打字速度: <span id="speedVal">120</span>ms</label>
+    <input type="range" id="speedSlider" min="50" max="300" value="120" oninput="document.getElementById('speedVal').textContent=this.value">
+  </div>
+  <button class="btn" onclick="replay()">▶ 重播动画</button>
+</div>
+
+<script>
+const LOGO = 'CODECAST';
+const logoEl = document.getElementById('logo');
+let speed = 120;
+
+// 创建背景粒子
+function createParticles() {
+  const container = document.getElementById('particles');
+  container.innerHTML = '';
+  for (let i = 0; i < 30; i++) {
+    const p = document.createElement('div');
+    p.className = 'particle';
+    p.style.left = Math.random() * 100 + '%';
+    p.style.animationDuration = (5 + Math.random() * 10) + 's';
+    p.style.animationDelay = Math.random() * 5 + 's';
+    p.style.background = '#6366f1';
+    container.appendChild(p);
+  }
+}
+
+// 打字机效果
+function typeLogo(callback) {
+  logoEl.innerHTML = '';
+  let i = 0;
+  function typeChar() {
+    if (i >= LOGO.length) {
+      if (callback) callback();
+      return;
+    }
+    const span = document.createElement('span');
+    span.className = 'char';
+    span.textContent = LOGO[i];
+    logoEl.appendChild(span);
+    i++;
+    setTimeout(typeChar, speed);
+  }
+  typeChar();
+}
+
+// 切换主题
+const themes = {
+  purple: ['#6366f1','#8b5cf6','#a855f7','#d946ef','#6366f1','#8b5cf6'],
+  cyan: ['#06b6d4','#0891b2','#0e7490','#06b6d4','#22d3ee','#0891b2'],
+  orange: ['#f97316','#ea580c','#fb923c','#f59e0b','#f97316','#ea580c'],
+  green: ['#22c55e','#16a34a','#4ade80','#10b981','#22c55e','#16a34a'],
+};
+function changeTheme(name) {
+  const colors = themes[name];
+  if (!colors) return;
+  const glow = logoEl;
+  glow.style.background = `linear-gradient(90deg, ${colors.join(',')})`;
+  glow.style.backgroundSize = '200% 100%';
+  glow.style.webkitBackgroundClip = 'text';
+  glow.style.webkitTextFillColor = 'transparent';
+  glow.style.backgroundClip = 'text';
+  glow.style.animation = 'gradientShift 3s ease-in-out infinite';
+  glow.style.filter = `drop-shadow(0 0 20px ${colors[0]}66)`;
+  document.querySelectorAll('.particle').forEach(p => p.style.background = colors[0]);
+  document.querySelector('.loading-bar').style.background = `linear-gradient(90deg, ${colors.join(',')})`;
+  document.querySelector('.scanline').style.background = `linear-gradient(90deg, transparent, ${colors[0]}44, transparent)`;
+}
+
+// 重播
+function replay() {
+  speed = parseInt(document.getElementById('speedSlider').value);
+  // 重置所有动画
+  document.querySelectorAll('.subtitle,.version,.loading-bar-container,.ready-msg,.modes,.cursor').forEach(el => {
+    el.style.opacity = '0';
+    el.style.animation = 'none';
+    void el.offsetWidth; // force reflow
+    el.style.animation = '';
+  });
+  document.querySelector('.loading-bar').style.width = '0%';
+  document.querySelector('.loading-bar').style.animation = 'none';
+  void document.querySelector('.loading-bar').offsetWidth;
+  document.querySelector('.loading-bar').style.animation = '';
+  createParticles();
+  typeLogo();
+}
+
+// 初始化
+createParticles();
+typeLogo();
+</script>
+</body>
+</html>
