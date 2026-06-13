@@ -60,6 +60,8 @@ type CodecastAgent struct {
 	// F05: 共享的 SQLite 连接（与 session.Manager 共享），
 	// 通过 GetSharedDB() 暴露给其他模块
 	sharedDB *sql.DB
+	// ABIntegrate: A/B 收敛器 + 时延追踪（A/B 评估闭环核心）
+	ab *ABIntegration
 }
 
 // newAgent 内部工厂函数
@@ -259,6 +261,7 @@ func newAgent(cfg *config.Config, sessionID string) (*CodecastAgent, error) {
 		lazyAutoMem:   lazyAutoMem,
 		mcpWarnings:   mcpWarnings,
 		sharedDB:      sharedDB,
+		ab:            LoadABIntegration(""),
 	}, nil
 }
 
@@ -606,6 +609,9 @@ func (a *CodecastAgent) SwitchModel(modelID string) error {
 
 // Process 处理用户输入
 func (a *CodecastAgent) Process(ctx context.Context, userInput string) error {
+	if a.ab != nil {
+		a.ab.StartRound(a.config.PromptVariant)
+	}
 	resp, err := a.session.Ask(ctx, userInput)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -631,6 +637,9 @@ func (a *CodecastAgent) Process(ctx context.Context, userInput string) error {
 
 // ProcessWithResult 处理用户输入并返回结构化结果
 func (a *CodecastAgent) ProcessWithResult(ctx context.Context, userInput string) (*ProcessResult, error) {
+	if a.ab != nil {
+		a.ab.StartRound(a.config.PromptVariant)
+	}
 	resp, err := a.session.Ask(ctx, userInput)
 	if err != nil {
 		return nil, err
@@ -660,9 +669,9 @@ func (a *CodecastAgent) recordCost(usage ap.AgentUsage, command string) {
 	}
 
 	// F8: 预算控制记录
+	var costUSD float64
 	if a.budgetCtrl != nil {
 		info := model.FindModel(a.config.Model)
-		costUSD := 0.0
 		if info != nil {
 			costUSD = float64(usage.PromptTokens)/1000*info.CostPer1kIn +
 				float64(usage.CompletionTokens)/1000*info.CostPer1kOut
@@ -692,6 +701,13 @@ func (a *CodecastAgent) recordCost(usage ap.AgentUsage, command string) {
 		}
 		_ = a.costTracker.RecordWithVariant(a.config.Model, a.config.Provider, "", command, llmUsage, variant)
 	}
+
+	// A/B 收敛器：结束当前轮记录 outcome。
+	// success 默认 true（成功完成 LLM 调用）；/fb n 或 /undo 撤销会调
+	// ABIntegration.ResolveSuccess(false) 修正。
+	if a.ab != nil {
+		a.ab.EndRound(usage.TotalTokens, costUSD, true)
+	}
 }
 
 // ClearContext 清除会话上下文
@@ -714,9 +730,36 @@ func (a *CodecastAgent) Close() error {
 	if a.costTracker != nil {
 		_ = a.costTracker.Close()
 	}
+	if a.ab != nil {
+		_ = a.ab.Close()
+	}
 	if a.memory != nil {
 		return a.memory.Close()
 	}
+	return nil
+}
+
+// GetABIntegration 返回 A/B 收敛器（A/B 评估闭环入口）。
+// /ab /fb 斜杠命令通过它读取/写入状态。
+func (a *CodecastAgent) GetABIntegration() *ABIntegration {
+	return a.ab
+}
+
+// RefreshConfig 重新从磁盘读 config 并应用到 agent。
+// /ab apply 等改完 ~/.codecast/config.yaml 后调用，使新权重立即生效。
+// 注意：不会重新构建 systemPrompt（避免历史 token 浪费），
+// 后续轮次由 PromptResolver 通过 cfg.PromptWeights 读取最新值。
+func (a *CodecastAgent) RefreshConfig() error {
+	if a == nil {
+		return nil
+	}
+	// 1) 重新加载 config
+	newCfg := config.Load()
+	if newCfg == nil {
+		return fmt.Errorf("加载 config 失败")
+	}
+	// 2) 更新内存中的 cfg（避免重建 agent）
+	a.config = newCfg
 	return nil
 }
 

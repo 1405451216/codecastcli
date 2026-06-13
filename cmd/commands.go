@@ -311,6 +311,15 @@ func RegisterBuiltinCommands(r *CommandRegistry) {
 			return true
 		},
 	})
+	r.Register(&CommandEntry{
+		Name:        "fb",
+		Aliases:     []string{"feedback"},
+		Description: "A/B 反馈 (y=上一轮有效 / n=上一轮有问题 / show)",
+		Handler: func(args string, ag *agent.CodecastAgent) bool {
+			handleFbCommand(args, ag)
+			return true
+		},
+	})
 }
 
 // ============== 辅助函数 ==============

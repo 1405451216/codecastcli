@@ -55,7 +55,13 @@ func handleAbCommand(args string, ag *agent.CodecastAgent) {
 	case "suggest":
 		abSuggest(available)
 	case "apply":
-		abApply(available)
+		abApply(available, ag)
+	case "export":
+		abExportPath := ""
+		if len(fields) >= 2 {
+			abExportPath = fields[1]
+		}
+		handleAbExport(abExportPath, ag)
 	case "epsilon":
 		if len(fields) < 2 {
 			color.Yellow("用法: /ab epsilon <0-1>")
@@ -74,19 +80,21 @@ func printAbHelp() {
 	color.Cyan("🎯 /ab — A/B 自动收敛管理")
 	fmt.Println()
 	color.White("用法:")
-	color.White("  /ab                  显示当前收敛状态 + 推荐")
-	color.White("  /ab enable           开启自动收敛（写入 config）")
-	color.White("  /ab disable          关闭自动收敛")
-	color.White("  /ab reset            清空所有历史（慎用）")
-	color.White("  /ab suggest          显示建议的下一个变体 + 当前权重")
-	color.White("  /ab apply            把建议权重写入 config.yaml（持久化）")
-	color.White("  /ab epsilon <0-1>    设置探索率（0=纯利用, 1=纯探索）")
-	color.White("  /ab help             显示本帮助")
+	color.White("  /ab                       显示当前收敛状态 + 推荐")
+	color.White("  /ab enable                开启自动收敛（写入 config）")
+	color.White("  /ab disable               关闭自动收敛")
+	color.White("  /ab reset                 清空所有历史（慎用）")
+	color.White("  /ab suggest               显示建议的下一个变体 + 当前权重")
+	color.White("  /ab apply                 把建议权重写入 config.yaml（持久化）")
+	color.White("  /ab export [path.html]    导出 HTML 报告（默认 ~/.codecast/reports/）")
+	color.White("  /ab epsilon <0-1>         设置探索率（0=纯利用, 1=纯探索）")
+	color.White("  /ab help                  显示本帮助")
 	fmt.Println()
-	color.White("工作原理: epsilon-greedy + 冷启动期")
+	color.White("工作原理: epsilon-greedy + 冷启动期 + Wilson 95% CI")
 	color.White("  - 冷启动期（每变体采样 < MinSamples）：均匀轮转")
 	color.White("  - 之后：以 epsilon 概率探索，(1-epsilon) 概率用当前最优")
 	color.White("  - 评分：1/avg_cost * (0.5 + success_rate*0.5)")
+	color.White("  - 显著性：CI 不重叠才算'显著更好'，避免 n 小时误判")
 }
 
 func abEnable() {
@@ -140,7 +148,7 @@ func abSuggest(available []string) {
 	}
 }
 
-func abApply(available []string) {
+func abApply(available []string, ag *agent.CodecastAgent) {
 	c, err := ab.Load(abStatePath())
 	if err != nil {
 		color.Red("✗ 加载状态失败: %v", err)
@@ -157,6 +165,14 @@ func abApply(available []string) {
 	color.Green("✓ 已把建议权重写入 ~/.codecast/config.yaml")
 	for name, w := range weights {
 		fmt.Printf("  %-15s %d\n", name, w)
+	}
+	// 立即让 agent 看到新权重（无需重启）
+	if ag != nil {
+		if err := ag.RefreshConfig(); err != nil {
+			color.Yellow("⚠ 即时刷新失败: %v（下次启动会生效）", err)
+		} else {
+			color.HiBlack("→ 已应用新权重到当前会话")
+		}
 	}
 }
 

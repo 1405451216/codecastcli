@@ -84,7 +84,8 @@ codecast exec "解释这个项目的架构"
 | `/index` | 重建索引 |
 | `/mode` | 切换权限模式 |
 | `/screenshot` | 截图分析 |
-| `/ab [enable\|disable\|reset\|suggest\|apply\|epsilon]` | A/B 自动收敛管理 |
+| `/ab [enable\|disable\|reset\|suggest\|apply\|export\|epsilon]` | A/B 自动收敛管理（带 Wilson 95% CI + 显著性检验 + HTML 导出） |
+| `/fb [y\|n\|show\|enable\|disable]` | 主动反馈 A/B 评估（撤销会自动联动） |
 
 ## 配置项
 

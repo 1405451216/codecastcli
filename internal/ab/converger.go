@@ -318,58 +318,117 @@ type Suggestion struct {
 
 // Report 生成人类可读的状态报告
 func (c *Converger) Report(available []string) string {
+	return c.ReportWithLatency(available, nil)
+}
+
+// ReportWithLatency 在 Report 基础上叠加 p50/p95 时延列。
+// latency 为 nil 时省略时延列。
+func (c *Converger) ReportWithLatency(available []string, latency *LatencyTracker) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	sug := c.Suggest(available)
-	// 按 samples 降序排
+	// 按 score 降序排
 	type row struct {
 		name      string
 		samples   int
 		avgCost   float64
-		success   float64
+		success   int
 		score     float64
 		weight    int
+		winLo     float64
+		winHi     float64
+		p50, p95  float64
 	}
 	rows := make([]row, 0, len(available))
 	for _, name := range available {
 		stat, ok := c.state.Variants[name]
 		var samples int
-		var avgCost, success, score float64
+		var avgCost, score float64
+		var success int
 		if ok {
 			samples = stat.Samples
 			avgCost = stat.AvgCost()
-			if samples > 0 {
-				success = float64(stat.Successes) / float64(samples)
-			}
+			success = stat.Successes
 			score = stat.Score()
 		}
-		rows = append(rows, row{
+		lo, hi := WilsonInterval(success, samples)
+		r := row{
 			name: name, samples: samples, avgCost: avgCost,
 			success: success, score: score, weight: sug.Weights[name],
-		})
+			winLo: lo, winHi: hi,
+		}
+		if latency != nil {
+			ls := latency.Stats(name)
+			r.p50 = ls.P50
+			r.p95 = ls.P95
+		}
+		rows = append(rows, r)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].score > rows[j].score })
 
 	out := fmt.Sprintf("A/B 收敛状态（epsilon=%.2f, 总决策=%d）\n",
 		c.config.Epsilon, c.state.TotalDecisions)
 	out += fmt.Sprintf("推荐下一个: %s\n\n", sug.NextVariant)
-	out += "变体          采样  平均成本  成功率  评分  权重\n"
-	out += "----------------------------------------------------\n"
+
+	if latency != nil {
+		out += "变体          采样   胜率 (95%CI)            平均成本     p50时延  p95时延  评分  权重\n"
+		out += "----------------------------------------------------------------------------------\n"
+	} else {
+		out += "变体          采样   胜率 (95%CI)            平均成本     评分  权重\n"
+		out += "------------------------------------------------------------------------\n"
+	}
+
 	for _, r := range rows {
-		successStr := "-"
+		ci := "-"
 		if r.samples > 0 {
-			successStr = fmt.Sprintf("%.0f%%", r.success*100)
+			ci = fmt.Sprintf("[%.0f%%, %.0f%%]", r.winLo*100, r.winHi*100)
 		}
 		scoreStr := "-"
 		if r.score > 0 {
-			scoreStr = fmt.Sprintf("%.4f", r.score)
+			scoreStr = fmt.Sprintf("%.3f", r.score)
 		}
 		costStr := "-"
 		if r.avgCost > 0 {
 			costStr = fmt.Sprintf("$%.4f", r.avgCost)
 		}
-		out += fmt.Sprintf("%-12s  %4d  %-9s  %-7s  %-7s  %d\n",
-			r.name, r.samples, costStr, successStr, scoreStr, r.weight)
+		successStr := "-"
+		if r.samples > 0 {
+			successStr = fmt.Sprintf("%2d/%-2d", r.success, r.samples)
+		}
+		if latency != nil {
+			p50 := "-"
+			p95 := "-"
+			if r.p50 > 0 {
+				p50 = fmt.Sprintf("%.0fms", r.p50)
+			}
+			if r.p95 > 0 {
+				p95 = fmt.Sprintf("%.0fms", r.p95)
+			}
+			out += fmt.Sprintf("%-12s  %4d   %-7s %-18s   %-12s  %-7s  %-7s  %-7s  %d\n",
+				r.name, r.samples, successStr, ci, costStr, p50, p95, scoreStr, r.weight)
+		} else {
+			out += fmt.Sprintf("%-12s  %4d   %-7s %-18s   %-12s  %-7s  %d\n",
+				r.name, r.samples, successStr, ci, costStr, scoreStr, r.weight)
+		}
+	}
+
+	// 显著性提示：找出 best 与每个其他变体两两比较
+	if len(rows) >= 2 {
+		best := rows[0]
+		notes := []string{}
+		for _, r := range rows[1:] {
+			if IsSignificantlyBetter(best.success, best.samples, r.success, r.samples, c.config.MinSamples) {
+				notes = append(notes, fmt.Sprintf("↑ %s 显著优于 %s（CI 不重叠）", best.name, r.name))
+			} else if best.samples >= c.config.MinSamples && r.samples >= c.config.MinSamples {
+				notes = append(notes, fmt.Sprintf("~ %s vs %s 差异不显著（需更多样本）", best.name, r.name))
+			}
+		}
+		if len(notes) > 0 {
+			out += "\n结论:\n"
+			for _, n := range notes {
+				out += "  " + n + "\n"
+			}
+		}
 	}
 	return out
 }

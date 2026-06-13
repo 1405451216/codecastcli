@@ -1254,6 +1254,7 @@ func handleUndoCommand(args string, ag *agent.CodecastAgent) {
 		return
 	}
 
+	var restoredPath string
 	if args == "" {
 		// 无参数时回滚最近修改的文件
 		backups := undoMgr.ListBackups()
@@ -1272,21 +1273,31 @@ func handleUndoCommand(args string, ag *agent.CodecastAgent) {
 			color.Yellow("无法恢复 %s", mostRecent.OriginalPath)
 			return
 		}
-		color.Green("✓ 已撤销 %s 的最近修改", mostRecent.OriginalPath)
-		return
+		restoredPath = mostRecent.OriginalPath
+		color.Green("✓ 已撤销 %s 的最近修改", restoredPath)
+	} else {
+		filePath := strings.TrimSpace(args)
+		restored, err := ag.UndoLastFileChange(filePath)
+		if err != nil {
+			color.Red("撤销失败: %v", err)
+			return
+		}
+		if !restored {
+			color.Yellow("未找到 %s 的备份", filePath)
+			return
+		}
+		restoredPath = filePath
+		color.Green("✓ 已撤销 %s 的最近修改", restoredPath)
 	}
 
-	filePath := strings.TrimSpace(args)
-	restored, err := ag.UndoLastFileChange(filePath)
-	if err != nil {
-		color.Red("撤销失败: %v", err)
-		return
+	// A/B 反馈：撤销视为 fail 信号，让收敛器知道上一轮的变体"被拒绝"
+	if restoredPath != "" && ag != nil {
+		if ab := ag.GetABIntegration(); ab != nil {
+			if ab.ResolveSuccess(false) {
+				color.HiBlack("→ A/B: 上一轮已记为 fail（撤销联动）")
+			}
+		}
 	}
-	if !restored {
-		color.Yellow("未找到 %s 的备份", filePath)
-		return
-	}
-	color.Green("✓ 已撤销 %s 的最近修改", filePath)
 }
 
 // handleBudgetCommand 处理 /budget 命令（F8: 查看预算使用情况）

@@ -25,6 +25,9 @@ func (a *CodecastAgent) StreamProcess(ctx context.Context, userInput string) err
 	}
 
 	msg := ap.UserMessage(userInput)
+	if a.ab != nil {
+		a.ab.StartRound(a.config.PromptVariant)
+	}
 	streamCh, err := a.agent.StreamRun(ctx, msg)
 	if err != nil {
 		return fmt.Errorf("启动流式输出失败: %w\n💡 请检查: 1) 模型 (%s) 是否正确 2) Provider (%s) 是否可用 3) API Key 是否有效 4) 网络连接是否正常", err, a.config.Model, a.config.Provider)
