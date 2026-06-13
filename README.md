@@ -137,13 +137,16 @@ codecast exec "解释这个项目的架构"
 
 Codecast 内置提示词 **A/B 测试与外部化框架**，可热替换系统提示词，无需重编译。
 
-### 三种内置变体
+### 六种内置变体
 
 | 变体 | 适用场景 |
 |------|----------|
 | `default` | 平衡：完整工具指南 + 关键反模式（推荐） |
 | `concise` | 极简：节省 token，适合小模型 / 长任务 |
 | `safety-first` | 保守：反模式强化 + 强制验证步骤 |
+| `claude-style` | 借鉴 Claude Fable 5 风格：XML 标签分章节 + `<good_response>/<bad_response>` 对照 |
+| `code-reviewer` | 专精代码审查：分级反馈（🔴/🟡/🟢）+ 安全/性能/可维护性三维度 |
+| `pair-programmer` | 双人编程：边做边讲解，每步配意图说明（适合教学/学习场景） |
 
 ### 使用方式
 
