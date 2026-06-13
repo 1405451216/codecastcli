@@ -27,6 +27,8 @@ func TestEmbeddedVariantsLoad(t *testing.T) {
 		"claude-style", "code-reviewer", "pair-programmer",
 		"decision-tree", "self-check", "scope-guard", "mcp-router",
 		"mentor-coach",
+		"search-then-edit", "format-locked", "architect-edit",
+		"shell-only", "lazy-mode", "overeager-mode",
 	} {
 		if !names[want] {
 			t.Errorf("missing embedded variant %q", want)
