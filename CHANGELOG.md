@@ -134,6 +134,42 @@
 - 新增 aider_test.go (95 行, 6 测试)
 - 35 包全过 / 0 FAIL
 
+## [0.3.1] - 2026-06-14
+
+在 v0.3.0 的 6 个新变体基础上**沉淀与文档化**：
+
+### 新增
+
+- **`docs/VARIANT-SELECTION-GUIDE.md`**（用户文档，~280 行）
+  - 30 秒速选：3 个问题帮你选变体
+  - 详细决策树（文本版）
+  - 3 大场景实战指南（日常/A/B/项目级）
+  - 速查表（粘桌面）
+  - 常见错误选择 vs 正确选择
+  - 17 变体速查卡
+  - 试验性建议（6 步试用顺序）
+  - 故障排查
+
+- **`docs/review/PROMPT-DISTILLATION-NOTES.md`**（方法论文档，~290 行）
+  - 4 步提炼法（结构 → 边界 → Few-shot → 适配）
+  - 13+ 核心模式库（按 8 大主题分类）
+  - 6 条"反模式"
+  - 提炼总账（Claude Fable 5 + Aider 双资料）
+  - 可继续提炼的资料清单
+  - 关键原则沉淀
+
+### 修复
+
+- README Version badge 从 0.1.0 → 0.3.1（之前漏改）
+
+### 维护
+
+- 升级到 v0.3.1（patch bump，仅文档增量）
+- 预编译 5 平台二进制
+  - codecast-linux-amd64 / linux-arm64 / darwin-amd64 / darwin-arm64 / windows-amd64.exe
+  - 每个 ~21MB
+  - ldflags 注入 Version / GitCommit / BuildDate
+
 ## [0.2.0] - 2026-06-13
 
 ### Breaking Changes

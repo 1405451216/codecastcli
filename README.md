@@ -2,7 +2,7 @@
 
 ![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat-square&logo=go)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
-![Version](https://img.shields.io/badge/Version-0.3.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-0.3.1-blue?style=flat-square)
 
 基于 [AgentPrimordia](https://github.com/agentprimordia) 框架的 AI 终端 Agent 工具，支持多 LLM Provider、智能代码理解、三级权限模型、Plan+Execute 双 Agent 协作等企业级特性。
 
