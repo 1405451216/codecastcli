@@ -5,7 +5,103 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.3.0] - 2026-06-13
+
+### 新增
+
+- **提示词 A/B 框架（v0.3.0 核心特性）**
+  - `internal/promptab` 包：Variant / Registry / Selector / Render
+  - 11 个嵌入变体：
+    - 通用风格：default / concise / safety-first
+    - 借鉴 Claude Fable 5：claude-style / decision-tree / self-check / mcp-router / mentor-coach
+    - 任务专精：code-reviewer / pair-programmer
+    - 安全加固：scope-guard
+  - 4 种外部化方式（按优先级）：
+    1. 编译时嵌入（保证 fallback）
+    2. `~/.codecast/prompts/*.yaml`（用户级）
+    3. 项目级 `.codecast/prompts/*.yaml`（按 cwd 自动加载）
+    4. 自定义目录（`--prompt-project-dir` 覆盖）
+  - 3 种选择策略：
+    - fixed（按名指定）
+    - round-robin（按权重轮转）
+    - weighted（按权重概率选）
+
+- **`/prompt` 斜杠命令**（运行时管理变体）
+  - `list` / `use <name>` / `show <name>` / `current` / `reload`
+  - 别名 `/p`
+  - 切换后立即生效，无需重启
+  - `use` 命令持久化到 `~/.codecast/config.yaml`
+
+- **`/config` 新字段**
+  - `prompt_variant` / `prompt_strategy` / `prompt_weights` / `prompt_project_dir`
+  - 校验：strategy 限定 `fixed|round-robin|weighted|weighted-random`
+
+- **CLI flags**
+  - `--prompt-variant <name>`
+  - `--prompt-strategy <strategy>`
+  - `--prompt-weight key=value`（可多次）
+  - `--prompt-project-dir <path>`
+  - 环境变量：`CODECAST_PROMPT_VARIANT` / `CODECAST_PROMPT_STRATEGY`
+
+- **Cost 埋点（A/B 数据基础）**
+  - `cost.Tracker` 加 `prompt_variant` 列（schema 幂等迁移）
+  - `RecordWithVariant(...)` API
+  - `SummaryByVariant()` 聚合查询
+  - `RecentRecords` 读 `prompt_variant` 字段
+  - `/cost by-variant` 子命令可视化
+
+- **CI 变体兼容性测试**
+  - 矩阵：3 变体 × 5 上下文 = 15 个组合
+  - 验证：渲染成功 / 无 `{{var}}` 残留 / 长度合理
+  - `.github/workflows/ci.yml` 新增 `prompt-compat` job（3 平台）
+  - 验证 CLI flag 真实存在
+
+- **斜杠命令参数化**（v0.3.0 早期合并）
+  - 新包 `internal/commands` 解析 YAML frontmatter + 模板引擎
+  - 支持 `{{var}}` / `{{var|"fallback"}}` / `$ARGUMENTS` / `$ARG0..9` / `key=value` 注入
+  - 重写 `.codecast/commands/{explain,review,test}.md` 加上 audience/depth/format/focus
+
+### 修复
+
+- **F-01** `--scope` 文件作用域真正生效（之前 LLM 仍可读 `/etc/passwd`）
+- **F-02** `/mode` 切换不再静默清除 SafeMode 黑名单
+- **F-03** go-prompt 与 confirm 不再抢 stdin
+- **F-04** MCP 启动错误暴露给用户
+- **F-05** agent 与 session 共享 SQLite 连接
+- **F-06** YAML 解析错误不再静默吞掉
+- **F-07** 大仓库索引时显示 spinner
+- **F-08** edit_file 加空白容差
+- **F-09** SwitchModel 重建索引器并重新注入 scope policy
+- **F-10** `os.Exit(1)` 替换为 `return error`
+- **F-12** `cost.Tracker.Record` 加锁
+- **顺带**：pickByWeight round-robin 永远返回 `available[0]`（加 strict 轮转）
+- **顺带**：EmbeddedVariants() 不调 Parse() 导致 Render 0 字节（显式 Parse）
+- **顺带**：COALESCE 不替换空串（改用 NULLIF）
+- **顺带**：RecentRecords 没读 prompt_variant（修扫描列）
+
+### 测试
+
+- 35 个包，全部通过
+- 60+ 个新增测试用例
+  - 12 个 promptab 基础
+  - 5 个 compat 矩阵
+  - 3 个 claude-style
+  - 1 个 mentor-coach
+  - 4 个 decision-tree 系列
+  - 4 个 cost variant
+  - 4 个 prompt resolver
+  - 11 个 SelectorConfig
+  - 3 个 LoadProjectDir
+  - 其余散落各处
+
+### 文档
+
+- README 新增"提示词 A/B 框架"章节（11 变体表 + 4 用法）
+- 完整化所有变体的 description / author
+
+## [0.2.0] - 2026-06-13
+
+### Breaking Changes
 
 ### Breaking Changes
 

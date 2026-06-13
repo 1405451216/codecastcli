@@ -7,16 +7,18 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"syscall"
+
+	"golang.org/x/term"
 )
 
 // ReadHiddenInput reads a password-like input from the terminal.
-// On Unix systems it uses syscall.ReadPassword to hide input.
+// On Unix systems it uses golang.org/x/term.ReadPassword to hide input.
+// 注意：syscall.ReadPassword 在 Go 1.17 后被废弃并移除，必须用 x/term。
 func ReadHiddenInput(prompt string) (string, error) {
 	fmt.Print(prompt)
 
-	fd := int(syscall.Stdin)
-	b, err := syscall.ReadPassword(fd)
+	fd := int(os.Stdin.Fd())
+	b, err := term.ReadPassword(fd)
 	fmt.Println()
 	if err == nil {
 		return string(b), nil
