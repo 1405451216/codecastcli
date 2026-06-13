@@ -69,6 +69,19 @@ func (p *PromptResolver) LoadProjectDir(dir string) error {
 	return p.registry.LoadDir(dir)
 }
 
+// Registry 暴露底层 promptab.Registry，便于 /prompt 斜杠命令列举/查找变体。
+// 调用方不应直接修改返回的 registry。
+func (p *PromptResolver) Registry() *promptab.Registry {
+	return p.registry
+}
+
+// Selector 返回当前选择策略（拷贝），便于 /prompt current 展示。
+func (p *PromptResolver) Selector() promptab.Selector {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.selector
+}
+
 // SetSelector 设置当前选择策略。
 // 影响后续 Build 调用；不影响已渲染的字符串。
 func (p *PromptResolver) SetSelector(sel promptab.Selector) {

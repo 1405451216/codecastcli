@@ -277,17 +277,26 @@ func (r *Registry) ResolveWithStrategy(sel Selector) (*Variant, string, error) {
 	return v, chosen, nil
 }
 
-// pickByWeight 是 weighted 选择的辅助实现。sticky=true 时避免连续两次选同一个。
+// pickByWeight 是加权 / 轮转选择的辅助实现。
+//
+//   - weighted=true:  按权重概率选（轮转计数器+权重累积），用 stickyCounter 替代 math/rand
+//     保证跨平台/可重现
+//   - weighted=false: 严格轮转（按 available 顺序依次返回），不读 weights
+//
 // 用全局确定性时间无关的伪随机（基于上一次选择+轮转）保证行为可重现。
 func pickByWeight(weights map[string]int, available []string, weighted bool) string {
 	if len(available) == 0 {
 		return ""
 	}
-	if !weighted || len(weights) == 0 {
-		// 退化为轮转：取第一个
-		return available[0]
+
+	// 严格轮转：每次调用推进到下一个 candidate。
+	// 与 weighted 共用 stickyCounter，行为同样可重现。
+	if !weighted {
+		idx := stickyCounter.Add(1) % uint64(len(available))
+		return available[idx]
 	}
-	// 加权随机：归一化权重后简单随机选（无 sticky 保证）
+
+	// 加权随机
 	var total int
 	for _, n := range available {
 		if w, ok := weights[n]; ok && w > 0 {
@@ -297,7 +306,6 @@ func pickByWeight(weights map[string]int, available []string, weighted bool) str
 	if total <= 0 {
 		return available[0]
 	}
-	// 简化：用轮转索引模总权重（不引入 math/rand 以保证测试可重现）
 	idx := stickyCounter.Add(1) % uint64(total)
 	var cum int
 	for _, n := range available {

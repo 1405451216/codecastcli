@@ -188,6 +188,12 @@
       "aliases": [],
       "description": "工作流 (pipeline/parallel/handoff)",
       "owner": "v0.2.0"
+    },
+    {
+      "name": "prompt",
+      "aliases": ["p"],
+      "description": "提示词变体管理 (list/use/show/current/reload)",
+      "owner": "v0.3.0"
     }
   ]
 }

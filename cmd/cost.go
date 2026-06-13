@@ -146,6 +146,44 @@ func costRunList(limit int, jsonOut bool) error {
 	return nil
 }
 
+// costRunByVariant 显示按 prompt 变体聚合的成本统计（v0.3.0 A/B 分析用）
+func costRunByVariant(jsonOut bool) error {
+	tracker, err := cost.NewTracker()
+	if err != nil {
+		return err
+	}
+	defer tracker.Close()
+
+	stats, err := tracker.SummaryByVariant()
+	if err != nil {
+		return err
+	}
+
+	if jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(stats)
+	}
+
+	if len(stats) == 0 {
+		color.Yellow("尚无成本记录")
+		return nil
+	}
+
+	color.Cyan("📊 按 prompt 变体聚合的成本")
+	fmt.Println()
+	fmt.Printf("  %-20s %-10s %-14s %-12s %-12s\n",
+		"变体", "调用次数", "总费用(USD)", "平均费用", "平均Token")
+	fmt.Println(strings.Repeat("-", 80))
+	for _, s := range stats {
+		fmt.Printf("  %-20s %-10d $%-13.4f $%-11.4f %-12.0f\n",
+			s.Variant, s.Calls, s.TotalCostUSD, s.AvgCostUSD, s.AvgTokensPerCall)
+	}
+	fmt.Println()
+	color.HiBlack("💡 用 /prompt use <name> 切换变体可改变后续成本分布")
+	return nil
+}
+
 // costRunClear 清空所有成本记录
 func costRunClear() error {
 	tracker, err := cost.NewTracker()

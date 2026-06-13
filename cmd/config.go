@@ -105,8 +105,19 @@ func configSet(key, value string) error {
 		} else {
 			return fmt.Errorf("invalid int for session_token_limit: %s", value)
 		}
+	case "prompt_variant":
+		cfg.PromptVariant = value
+	case "prompt_strategy":
+		switch value {
+		case "fixed", "round-robin", "weighted", "weighted-random":
+			cfg.PromptStrategy = value
+		default:
+			return fmt.Errorf("invalid prompt_strategy: %s (allowed: fixed/round-robin/weighted/weighted-random)", value)
+		}
+	case "prompt_project_dir":
+		cfg.PromptProjectDir = value
 	default:
-		return fmt.Errorf("未知配置项: %s\n支持的配置项: api_key, model, provider, base_url, permission_mode, safe_mode, auto_compact, auto_compact_ratio, auto_checkpoint, auto_stash, daily_budget_usd, session_budget_usd, daily_token_limit, session_token_limit", key)
+		return fmt.Errorf("未知配置项: %s\n支持的配置项: api_key, model, provider, base_url, permission_mode, safe_mode, auto_compact, auto_compact_ratio, auto_checkpoint, auto_stash, daily_budget_usd, session_budget_usd, daily_token_limit, session_token_limit, prompt_variant, prompt_strategy, prompt_project_dir", key)
 	}
 
 	return config.Save(cfg)
@@ -151,6 +162,21 @@ func configGet(key string) (string, error) {
 		return strconv.Itoa(cfg.DailyTokenLimit), nil
 	case "session_token_limit":
 		return strconv.Itoa(cfg.SessionTokenLimit), nil
+	case "prompt_variant":
+		if cfg.PromptVariant == "" {
+			return "(未设置, 使用 default)", nil
+		}
+		return cfg.PromptVariant, nil
+	case "prompt_strategy":
+		if cfg.PromptStrategy == "" {
+			return "fixed", nil
+		}
+		return cfg.PromptStrategy, nil
+	case "prompt_project_dir":
+		if cfg.PromptProjectDir == "" {
+			return "(未设置, 使用 .codecast/prompts)", nil
+		}
+		return cfg.PromptProjectDir, nil
 	default:
 		return "", fmt.Errorf("未知配置项: %s", key)
 	}
@@ -174,6 +200,24 @@ func configList() {
 	fmt.Printf("  session_budget_usd: %.2f\n", cfg.SessionBudgetUSD)
 	fmt.Printf("  daily_token_limit:  %d\n", cfg.DailyTokenLimit)
 	fmt.Printf("  session_token_limit:%d\n", cfg.SessionTokenLimit)
+	promptVariant := cfg.PromptVariant
+	if promptVariant == "" {
+		promptVariant = "(default)"
+	}
+	promptStrategy := cfg.PromptStrategy
+	if promptStrategy == "" {
+		promptStrategy = "fixed"
+	}
+	promptProjectDir := cfg.PromptProjectDir
+	if promptProjectDir == "" {
+		promptProjectDir = "(.codecast/prompts)"
+	}
+	fmt.Printf("  prompt_variant:     %s\n", promptVariant)
+	fmt.Printf("  prompt_strategy:    %s\n", promptStrategy)
+	if len(cfg.PromptWeights) > 0 {
+		fmt.Printf("  prompt_weights:     %v\n", cfg.PromptWeights)
+	}
+	fmt.Printf("  prompt_project_dir: %s\n", promptProjectDir)
 }
 
 // configInit 初始化配置文件

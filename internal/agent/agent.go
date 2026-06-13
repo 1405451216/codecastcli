@@ -685,7 +685,12 @@ func (a *CodecastAgent) recordCost(usage ap.AgentUsage, command string) {
 			CompletionTokens: usage.CompletionTokens,
 			TotalTokens:      usage.TotalTokens,
 		}
-		_ = a.costTracker.Record(a.config.Model, a.config.Provider, "", command, llmUsage)
+		// v0.3.0 A/B 埋点：附带当前 prompt variant 名，便于后续按变体聚合分析
+		variant := ""
+		if a.config != nil {
+			variant = a.config.PromptVariant
+		}
+		_ = a.costTracker.RecordWithVariant(a.config.Model, a.config.Provider, "", command, llmUsage, variant)
 	}
 }
 

@@ -294,6 +294,15 @@ func RegisterBuiltinCommands(r *CommandRegistry) {
 			return true
 		},
 	})
+	r.Register(&CommandEntry{
+		Name: "prompt",
+		Aliases: []string{"p"},
+		Description: "提示词变体管理 (list/use/show/current/reload)",
+		Handler: func(args string, ag *agent.CodecastAgent) bool {
+			handlePromptCommand(args, ag)
+			return true
+		},
+	})
 }
 
 // ============== 辅助函数 ==============

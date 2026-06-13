@@ -945,6 +945,10 @@ func handleCostCommand(args string, ag *agent.CodecastAgent) {
 		if err := costRunClear(); err != nil {
 			color.Red("清空失败: %v", err)
 		}
+	case "by-variant", "variant", "ab":
+		if err := costRunByVariant(false); err != nil {
+			color.Red("查询失败: %v", err)
+		}
 	case "help", "-h":
 		printCostHelp()
 	default:
@@ -960,6 +964,7 @@ func printCostHelp() {
 	color.White("  /cost                  查看成本汇总")
 	color.White("  /cost daily [days]     查看每日成本（默认 7 天）")
 	color.White("  /cost list [limit]     查看最近调用（默认 20 条）")
+	color.White("  /cost by-variant       按 prompt 变体聚合（v0.3.0 A/B 分析）")
 	color.White("  /cost clear            清空所有记录")
 	fmt.Println()
 }
