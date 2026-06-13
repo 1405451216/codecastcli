@@ -99,6 +99,41 @@
 - README 新增"提示词 A/B 框架"章节（11 变体表 + 4 用法）
 - 完整化所有变体的 description / author
 
+### 新增（v0.3.0 增量）
+
+在 v0.3.0 发布后从 Aider 提示词架构提炼 6 个新变体（累计 17）：
+
+- **`search-then-edit`** —— 借鉴 Aider 两阶段工作流
+  - Phase 1 Triage（只读 + 输出建议文件列表）→ 停止
+  - → 用户 add 文件 → Phase 2 Edit（仅可改 add 列表里的文件）
+  - 核心价值：模型永远不"擅自改用户没授权的文件"
+
+- **`format-locked`** —— 借鉴 Aider 标准化约束词
+  - 词典：MUST / NEVER / ONLY EVER / ALWAYS + repair prompt
+  - 灵感：Aider editblock 99%+ 解析率靠这套
+  - 适合：CI、自动化、agent 间通信
+
+- **`architect-edit`** —— 借鉴 Aider 双 Agent 协作
+  - Plan-Agent（出自然语言方案）→ Edit-Agent（转代码）
+  - 核心价值："想"和"做"分离到两次 LLM 调用
+
+- **`shell-only`** —— 借鉴 Aider shell 工具契约
+  - 1-3 one-liner 硬约束、不写脚本、不用占位符
+  - 按场景给分类示例（test/build/debug/cleanup/install）
+
+- **`lazy-mode`** —— 借鉴 Aider `lazy_prompt`
+  - 禁 TODO / 伪代码 / "..." / "实现略"
+  - 强制：每个函数都有完整实现
+
+- **`overeager-mode`** —— 借鉴 Aider `overeager_prompt`
+  - 严禁"顺手"：不顺手格式化、不顺手修 bug、不顺手优化
+  - 看到问题单独列出来等用户决定
+
+测试：
+- TestEmbeddedVariantsLoad 扩到 17 个变体
+- 新增 aider_test.go (95 行, 6 测试)
+- 35 包全过 / 0 FAIL
+
 ## [0.2.0] - 2026-06-13
 
 ### Breaking Changes
