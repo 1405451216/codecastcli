@@ -303,6 +303,14 @@ func RegisterBuiltinCommands(r *CommandRegistry) {
 			return true
 		},
 	})
+	r.Register(&CommandEntry{
+		Name:        "ab",
+		Description: "A/B 自动收敛管理 (enable/disable/reset/suggest/apply/epsilon)",
+		Handler: func(args string, ag *agent.CodecastAgent) bool {
+			handleAbCommand(args, ag)
+			return true
+		},
+	})
 }
 
 // ============== 辅助函数 ==============

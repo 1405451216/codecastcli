@@ -64,7 +64,7 @@ codecast exec "解释这个项目的架构"
 | `/clear` | 清屏 |
 | `/compact` | 压缩上下文 |
 | `/config [list\|get\|set\|wizard]` | 配置管理（v0.2.0+ 替代 `codecast config`） |
-| `/cost [summary\|daily\|list\|clear]` | 成本管理 |
+| `/cost [summary\|daily\|list\|clear\|by-variant]` | 成本管理 |
 | `/session [list\|show\|delete\|export]` | 会话管理 |
 | `/mcp [list\|add\|remove\|test\|connect]` | MCP 服务器管理 |
 | `/plugin [list\|install\|unload]` | 插件管理 |
@@ -84,6 +84,7 @@ codecast exec "解释这个项目的架构"
 | `/index` | 重建索引 |
 | `/mode` | 切换权限模式 |
 | `/screenshot` | 截图分析 |
+| `/ab [enable\|disable\|reset\|suggest\|apply\|epsilon]` | A/B 自动收敛管理 |
 
 ## 配置项
 

@@ -181,6 +181,26 @@ type VariantStat struct {
 	AvgTokensPerCall float64 `json:"avg_tokens_per_call"`
 }
 
+// ReportByVariantText 返回人类可读的"按变体聚合"报告。
+// 供 /ab 斜杠命令展示。
+func (t *Tracker) ReportByVariantText() (string, error) {
+	stats, err := t.SummaryByVariant()
+	if err != nil {
+		return "", err
+	}
+	if len(stats) == 0 {
+		return "尚无成本记录", nil
+	}
+	var sb strings.Builder
+	sb.WriteString("变体              调用     总费用(USD)   平均费用(USD)   平均 Token\n")
+	sb.WriteString("--------------------------------------------------------\n")
+	for _, s := range stats {
+		sb.WriteString(fmt.Sprintf("%-18s  %4d   $%-10.4f   $%-10.4f   %.0f\n",
+			s.Variant, s.Calls, s.TotalCostUSD, s.AvgCostUSD, s.AvgTokensPerCall))
+	}
+	return sb.String(), nil
+}
+
 // SummaryByVariant 按 prompt_variant 维度聚合成本。
 // 用于 /cost summary --by-variant 或 A/B 分析仪表板。
 func (t *Tracker) SummaryByVariant() ([]VariantStat, error) {

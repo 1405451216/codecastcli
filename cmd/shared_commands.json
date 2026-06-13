@@ -194,6 +194,12 @@
       "aliases": ["p"],
       "description": "提示词变体管理 (list/use/show/current/reload)",
       "owner": "v0.3.0"
+    },
+    {
+      "name": "ab",
+      "aliases": [],
+      "description": "A/B 自动收敛管理 (enable/disable/reset/suggest/apply/epsilon)",
+      "owner": "v0.3.1"
     }
   ]
 }
