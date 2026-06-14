@@ -3,7 +3,7 @@ package version
 import "fmt"
 
 // Version 语义化版本号，发布时由 CI 覆盖
-var Version = "0.3.1"
+var Version = "0.4.0"
 
 // GitCommit 构建时的 Git commit hash，通过 -ldflags 注入
 var GitCommit = "unknown"

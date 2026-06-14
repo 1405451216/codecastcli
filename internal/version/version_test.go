@@ -83,8 +83,8 @@ func TestShortVersion(t *testing.T) {
 }
 
 func TestVersionDefaults(t *testing.T) {
-	if Version != "0.3.1" {
-		t.Errorf("Version = %q, want %q", Version, "0.3.1")
+	if Version != "0.4.0" {
+		t.Errorf("Version = %q, want %q", Version, "0.4.0")
 	}
 	if GitCommit != "unknown" {
 		t.Errorf("GitCommit = %q, want %q", GitCommit, "unknown")

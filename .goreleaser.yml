@@ -1,11 +1,12 @@
-# GoReleaser configuration for CodecastCLI
-# https://goreleaser.com
+# GoReleaser 配置 — CodecastCLI v0.4.0
+# 文档: https://goreleaser.com/customization/
 
-project_name: codecast
+version: 2
 
 before:
   hooks:
     - go mod tidy
+    - go generate ./...
 
 builds:
   - id: codecast
@@ -20,14 +21,14 @@ builds:
     goarch:
       - amd64
       - arm64
-    ldflags:
-      - -s -w
-      - -X codecast/cli/internal/version.Version={{.Version}}
-      - -X codecast/cli/internal/version.GitCommit={{.Commit}}
-      - -X codecast/cli/internal/version.BuildDate={{.Date}}
     ignore:
       - goos: windows
         goarch: arm64
+    ldflags:
+      - -s -w
+      - -X codecast/cli/internal/version.Version={{.Version}}
+      - -X codecast/cli/internal/version.GitCommit={{.ShortCommit}}
+      - -X codecast/cli/internal/version.BuildDate={{.Date}}
 
 archives:
   - id: default
@@ -38,35 +39,18 @@ archives:
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if eq .Arch "arm64" }}aarch64
       {{- else }}{{ .Arch }}{{ end }}
-    format: tar.gz
     format_overrides:
       - goos: windows
         format: zip
     files:
+      - README.md
       - LICENSE*
-      - README*
-      - CHANGELOG*
+      - CHANGELOG.md
+      - completions/*
 
 checksum:
-  name_template: checksums.txt
+  name_template: "checksums.txt"
   algorithm: sha256
-
-signs:
-  - cmd: gpg
-    args:
-      - "--batch"
-      - "--local-user"
-      - "{{ .Env.GPG_FINGERPRINT }}"
-      - "--output"
-      - "${signature}"
-      - "--detach-sign"
-      - "${artifact}"
-    artifacts: checksum
-    ids:
-      - default
-
-snapshot:
-  name_template: "{{ incpatch .Version }}-next"
 
 changelog:
   sort: asc
@@ -76,72 +60,56 @@ changelog:
       - "^docs:"
       - "^test:"
       - "^chore:"
-      - "^ci:"
-  groups:
-    - title: Features
-      regexp: "^.*feat[(\\w)]*:+.*$"
-      order: 0
-    - title: Bug Fixes
-      regexp: "^.*fix[(\\w)]*:+.*$"
-      order: 1
-    - title: Performance Improvements
-      regexp: "^.*perf[(\\w)]*:+.*$"
-      order: 2
-    - title: Others
-      order: 999
+      - "Merge pull request"
+      - "Merge branch"
 
-brews:
+# Homebrew Tap (macOS/Linux)
+homebrew_casks:
   - name: codecast
-    tap:
+    repository:
       owner: codecast
       name: homebrew-tap
-      branch: main
-    folder: Formula
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
     homepage: "https://github.com/codecast/codecastcli"
-    description: "CodecastCLI - AI-powered coding assistant"
-    license: MIT
+    description: "AI-powered terminal coding assistant"
     install: |
-      bin.install "codecast"
-    test: |
-      system "#{bin}/codecast", "--version"
+      binary "codecast"
+    uninstall: |
+      delete "#{usr_bin}/codecast"
 
+# Scoop Bucket (Windows)
 scoops:
   - name: codecast
-    bucket:
+    repository:
       owner: codecast
       name: scoop-bucket
-      branch: main
+      token: "{{ .Env.SCOOP_BUCKET_TOKEN }}"
     homepage: "https://github.com/codecast/codecastcli"
-    description: "CodecastCLI - AI-powered coding assistant"
+    description: "AI-powered terminal coding assistant"
     license: MIT
 
+# NFPM (DEB/RPM for Linux)
 nfpms:
-  - id: packages
+  - id: codecast
     package_name: codecast
-    file_name_template: >-
-      {{ .PackageName }}_
-      {{- .Version }}_
-      {{- .Os }}_
-      {{- if eq .Arch "amd64" }}x86_64
-      {{- else if eq .Arch "arm64" }}aarch64
-      {{- else }}{{ .Arch }}{{ end }}
+    vendor: Codecast
     homepage: "https://github.com/codecast/codecastcli"
-    description: "CodecastCLI - AI-powered coding assistant"
+    maintainer: "Codecast Team <noreply@codecast.dev>"
+    description: "AI-powered terminal coding assistant"
     license: MIT
     formats:
       - deb
       - rpm
-    maintainer: "Codecast Team"
-    section: utils
-    priority: optional
     contents:
-      - src: ./codecast
-        dst: /usr/bin/codecast
-    deb:
-      lintian_overrides:
-        - statically-linked-binary
-        - changelog-file-missing-in-native-package
+      - src: ./completions/codecast.bash
+        dst: /etc/bash_completion.d/codecast
+      - src: ./completions/codecast.zsh
+        dst: /usr/share/zsh/site-functions/_codecast
+      - src: ./completions/codecast.fish
+        dst: /usr/share/fish/vendor_completions.d/codecast.fish
 
+# GitHub Release
 release:
   github:
     owner: codecast
@@ -149,3 +117,32 @@ release:
   draft: false
   prerelease: auto
   mode: replace
+  header: |
+    ## CodecastCLI v{{ .Version }}
+
+    详见 [CHANGELOG.md](CHANGELOG.md)
+  footer: |
+    ---
+    ### 安装
+
+    **go install**
+    ```bash
+    go install github.com/codecast/codecastcli@v{{ .Version }}
+    ```
+
+    **Homebrew (macOS/Linux)**
+    ```bash
+    brew install --cask codecast/codecast/codecast
+    ```
+
+    **Scoop (Windows)**
+    ```bash
+    scoop bucket add codecast https://github.com/codecast/scoop-bucket
+    scoop install codecast
+    ```
+
+    **Linux DEB/RPM**
+    从下方 Assets 下载对应包安装。
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
