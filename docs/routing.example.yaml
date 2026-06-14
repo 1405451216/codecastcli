@@ -1,0 +1,67 @@
+# Codecast 任务感知路由配置示例
+#
+# 文件位置（先找到的优先）：
+#   1. --prompt-routing <path> 指定的文件
+#   2. .codecast/prompts/routing.yaml（项目级，团队共享）
+#   3. ~/.codecast/prompts/routing.yaml（用户级，个人偏好）
+#
+# 启用方式（~/.codecast/config.yaml）：
+#   prompt_strategy: routed    # 替代 weighted / fixed
+#
+# 工作原理：
+#   L1 关键词规则 → 命中即固定变体（不做 A/B）
+#   L2 复杂度启发式 → 基于输入特征打分（字符/工具/步骤）
+#   都没命中 → 回落到 weighted A/B
+
+# ===== L1 关键词规则 =====
+# priority 数字越大越优先。建议保留内置规则的 priority 范围（100~40），
+# 自定义规则用 35 以下。
+rules:
+  # 团队特定的高频场景
+  - name: my-deploy
+    variant: shell-only
+    priority: 30
+    description: "团队部署脚本相关"
+    keywords: ["deploy", "部署", "release", "上线"]
+
+  - name: my-debug
+    variant: decision-tree
+    priority: 25
+    description: "Bug 排查路径"
+    keywords: ["bug", "报错", "crash", "panic", "panic:", "stack trace"]
+
+  # 复写默认规则（更高 priority 会覆盖）
+  - name: my-strict-review
+    variant: code-reviewer
+    priority: 75
+    description: "团队 code review 规范"
+    keywords: ["合规", "compliance", "audit", "审计"]
+
+# ===== L2 复杂度启发式阈值 =====
+complexity:
+  # 字符数超过此值视为"长任务" → default（详细指导）
+  long_task_chars: 250
+
+  # 字符数 ≤ 此值且是问句 → concise（极简）
+  short_question_chars: 40
+
+  # 工具/写动作关键词。命中即大幅加分，倾向 default
+  has_tool_hint:
+    - 重构
+    - refactor
+    - 重写
+    - 改
+    - fix
+    - 修复
+    - 添加
+    - add
+    - 删除
+    - delete
+    - 实现
+    - implement
+    - create
+    - 创建
+    - 写
+    - write
+    - 优化
+    - optimize

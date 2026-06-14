@@ -8,3 +8,9 @@ import "sync/atomic"
 //   2. 不引入全局锁
 //   3. 仍能跨多次调用产生不同结果
 var stickyCounter atomic.Uint64
+
+// StickyCounterNext 原子推进并返回新值。
+// 导出供外部包（agent）使用，避免重复实现选择逻辑。
+func StickyCounterNext() uint64 {
+	return stickyCounter.Add(1)
+}

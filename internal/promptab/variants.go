@@ -227,6 +227,8 @@ const (
 	SelectRoundRobin
 	// SelectWeightedRandom 加权随机（不重复连续）
 	SelectWeightedRandom
+	// SelectRouted 任务感知路由（L1 关键词 + L2 复杂度 + 回落 weighted）
+	SelectRouted
 )
 
 // Selector 是可序列化的选择配置，由 CLI / config 解析得到。
@@ -237,6 +239,12 @@ type Selector struct {
 	// Weights 仅在 SelectRoundRobin / SelectWeightedRandom 下生效
 	// map[variant_name]weight，权重为正整数
 	Weights map[string]int `yaml:"weights,omitempty"`
+	// UserInput 仅在 SelectRouted 下生效：当前用户输入
+	UserInput string `yaml:"user_input,omitempty"`
+	// HasTools 仅在 SelectRouted 下生效：调用方判断是否需要写文件/跑命令
+	HasTools bool `yaml:"has_tools,omitempty"`
+	// Router 仅在 SelectRouted 下生效：路由决策器（可为 nil → 用默认）
+	Router *Router `yaml:"-"`
 }
 
 // ResolveWithStrategy 按策略选 variant。优先用 Selector.Fixed；缺省走 "default"。
@@ -258,6 +266,30 @@ func (r *Registry) ResolveWithStrategy(sel Selector) (*Variant, string, error) {
 		chosen = pickByWeight(sel.Weights, available, sel.Strategy == SelectWeightedRandom)
 		if chosen == "" {
 			chosen = "default"
+		}
+	case SelectRouted:
+		// 任务感知路由：L1 关键词 → L2 复杂度 → 回落 weighted
+		rt := sel.Router
+		if rt == nil {
+			rt = NewDefaultRouter()
+		}
+		dec := rt.Route(RouteInput{
+			UserInput: sel.UserInput,
+			HasTools:  sel.HasTools,
+			Available: available,
+		})
+		if dec.Variant != "" {
+			chosen = dec.Variant
+			// 路由命中时通知埋点（source 带 l1/l2 前缀）
+			if r.onSelect != nil {
+				r.onSelect(chosen, dec.Source)
+			}
+		} else {
+			// 路由未命中 → 回落 weighted
+			chosen = pickByWeight(sel.Weights, available, true)
+			if chosen == "" {
+				chosen = "default"
+			}
 		}
 	default:
 		chosen = "default"

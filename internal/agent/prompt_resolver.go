@@ -91,10 +91,29 @@ func (p *PromptResolver) SetSelector(sel promptab.Selector) {
 }
 
 // Build 渲染最终系统提示词。优先走 registry；失败回落到原 buildSystemPrompt。
-func (p *PromptResolver) Build(goos, cwd, projectRules string, idx *indexer.Indexer, mode string, budgetUSD float64) string {
+//
+// userInput 变体参数：
+//   - 空字符串：保留向后兼容（路由不可用时不影响结果）
+//   - 非空：若 selector.Strategy == SelectRouted，会基于此输入做 L1/L2 决策
+//   - hasTools：调用方判断本次是否需要写文件/跑命令（可选）
+func (p *PromptResolver) Build(goos, cwd, projectRules string, idx *indexer.Indexer, mode string, budgetUSD float64, userInput ...string) string {
 	p.mu.RLock()
 	sel := p.selector
 	p.mu.RUnlock()
+
+	// 可变参数：[userInput, hasTools]（位置敏感）
+	// 为了避免破坏既有的 6 参数调用，把 userInput 放在第一个 variadic 参数
+	if len(userInput) > 0 {
+		sel.UserInput = userInput[0]
+	}
+	if len(userInput) > 1 {
+		// 第二个参数当作 has_tools（约定 "true"/"false"）
+		sel.HasTools = userInput[1] == "true"
+	}
+	// 若 router 未注入 → 用默认（构造一次复用）
+	if sel.Strategy == promptab.SelectRouted && sel.Router == nil {
+		sel.Router = promptab.NewDefaultRouter()
+	}
 
 	in := promptab.RenderInputs{
 		OS:           goos,
@@ -149,6 +168,8 @@ func (s SelectorConfig) ToSelector() promptab.Selector {
 		out.Strategy = promptab.SelectRoundRobin
 	case "weighted", "weighted-random":
 		out.Strategy = promptab.SelectWeightedRandom
+	case "routed", "router", "task-aware":
+		out.Strategy = promptab.SelectRouted
 	}
 	return out
 }

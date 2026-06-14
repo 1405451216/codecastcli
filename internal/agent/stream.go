@@ -25,8 +25,10 @@ func (a *CodecastAgent) StreamProcess(ctx context.Context, userInput string) err
 	}
 
 	msg := ap.UserMessage(userInput)
+	// 任务感知路由：每轮根据用户输入 + 工具诉求重选变体
+	a.selectVariantForInput(userInput, false)
 	if a.ab != nil {
-		a.ab.StartRound(a.config.PromptVariant)
+		a.ab.StartRound(a.currentVariant)
 	}
 	streamCh, err := a.agent.StreamRun(ctx, msg)
 	if err != nil {

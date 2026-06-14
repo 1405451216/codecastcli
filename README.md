@@ -209,6 +209,37 @@ sections:
 
 支持的 `{{var}}` 变量：`os` / `cwd` / `mode` / `budget` / `mode_advice` / `file_tree` / `project_rules`，以及 `$ARGUMENTS` / `$ARG0`..`$ARG9`。
 
+### 任务感知路由（v0.3.2+ L1+L2）
+
+`prompt_strategy: routed` 启用任务感知路由，让变体选择**不靠随机**：
+
+| 层级 | 机制 | 例子 |
+|------|------|------|
+| **L1 关键词** | 关键词 → 固定变体 | "rm -rf" → safety-first；"review" → code-reviewer |
+| **L2 复杂度** | 字符/工具/步骤打分 | 长任务 + 工具诉求 → default；极短问句 → concise |
+| **A/B 兜底** | 都没命中 | 走 weighted 策略 |
+
+`~/.codecast/config.yaml`：
+```yaml
+prompt_strategy: routed
+```
+
+团队级规则（项目根目录 `.codecast/prompts/routing.yaml`，见 [docs/routing.example.yaml](docs/routing.example.yaml)）：
+
+```yaml
+rules:
+  - name: my-deploy
+    variant: shell-only
+    priority: 30
+    keywords: ["deploy", "部署", "release"]
+complexity:
+  long_task_chars: 250
+  short_question_chars: 40
+  has_tool_hint: ["重构", "refactor", "fix", "添加"]
+```
+
+**为什么 L1/L2 不污染 A/B 评估**：路由命中时直接选变体，不进 weighted 抽样；只有"无信号"的轮次才被 A/B 框架处理。
+
 ## MCP 服务器模板
 
 内置 10 个 MCP 服务器模板，可通过 `codecast mcp` 一键启用：

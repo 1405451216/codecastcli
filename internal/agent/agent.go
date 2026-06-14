@@ -62,6 +62,12 @@ type CodecastAgent struct {
 	sharedDB *sql.DB
 	// ABIntegrate: A/B 收敛器 + 时延追踪（A/B 评估闭环核心）
 	ab *ABIntegration
+	// currentVariant 当前轮次选中的变体名（每轮 Process 入口重算）。
+	// system prompt 仍由 buildSystemPrompt 静态构建（避免破坏会话），
+	// 但 ab.RecordOutcome 实际记录的 variant 用这个值，以反映路由决策。
+	currentVariant string
+	// routerPrompt 路由决策器（懒初始化：首次 SelectRouted 策略时构造）。
+	routerPrompt *RouterCache
 }
 
 // newAgent 内部工厂函数
@@ -262,6 +268,7 @@ func newAgent(cfg *config.Config, sessionID string) (*CodecastAgent, error) {
 		mcpWarnings:   mcpWarnings,
 		sharedDB:      sharedDB,
 		ab:            LoadABIntegration(""),
+		routerPrompt:  NewRouterCache(),
 	}, nil
 }
 
@@ -609,8 +616,9 @@ func (a *CodecastAgent) SwitchModel(modelID string) error {
 
 // Process 处理用户输入
 func (a *CodecastAgent) Process(ctx context.Context, userInput string) error {
+	a.selectVariantForInput(userInput, false)
 	if a.ab != nil {
-		a.ab.StartRound(a.config.PromptVariant)
+		a.ab.StartRound(a.currentVariant)
 	}
 	resp, err := a.session.Ask(ctx, userInput)
 	if err != nil {
@@ -637,8 +645,9 @@ func (a *CodecastAgent) Process(ctx context.Context, userInput string) error {
 
 // ProcessWithResult 处理用户输入并返回结构化结果
 func (a *CodecastAgent) ProcessWithResult(ctx context.Context, userInput string) (*ProcessResult, error) {
+	a.selectVariantForInput(userInput, false)
 	if a.ab != nil {
-		a.ab.StartRound(a.config.PromptVariant)
+		a.ab.StartRound(a.currentVariant)
 	}
 	resp, err := a.session.Ask(ctx, userInput)
 	if err != nil {
