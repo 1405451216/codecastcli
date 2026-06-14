@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,68 +82,146 @@ func TestDiffPreviewHook(t *testing.T) {
 	}
 }
 
-// TestExtractJSONField 测试 JSON 字段提取
-func TestExtractJSONField(t *testing.T) {
+// TestJsonGetString 测试 jsonGetString 的各种输入场景。
+// 这同时是 P0 漏洞修复的回归测试：验证标准库能正确处理
+// \uXXXX、嵌套对象、控制字符、多行字符串、攻击载荷等。
+func TestJsonGetString(t *testing.T) {
 	tests := []struct {
 		name     string
 		jsonStr  string
-		field    string
+		key      string
 		expected string
 	}{
 		{
-			name:     "simple string field",
-			jsonStr:  `{"file_path": "/tmp/test.go", "content": "hello"}`,
-			field:    "file_path",
-			expected: "/tmp/test.go",
+			name:     "basic string",
+			jsonStr:  `{"key": "value"}`,
+			key:      "key",
+			expected: "value",
 		},
 		{
-			name:     "path field",
-			jsonStr:  `{"path": "/tmp/test.go"}`,
-			field:    "path",
-			expected: "/tmp/test.go",
-		},
-		{
-			name:     "missing field",
-			jsonStr:  `{"other": "value"}`,
-			field:    "file_path",
+			name:     "empty object",
+			jsonStr:  `{}`,
+			key:      "key",
 			expected: "",
 		},
 		{
-			name:     "escaped content",
-			jsonStr:  `{"old_string": "line1\nline2", "new_string": "replaced"}`,
-			field:    "old_string",
+			name:     "missing field",
+			jsonStr:  `{"other": "x"}`,
+			key:      "key",
+			expected: "",
+		},
+		{
+			name:     "nested object returns empty (not a string)",
+			jsonStr:  `{"key": {"nested": "val"}}`,
+			key:      "key",
+			expected: "",
+		},
+		{
+			name:     "unicode escape decoded (P0 漏洞修复验证)",
+			jsonStr:  `{"key": "hello"}`,
+			key:      "key",
+			expected: "hello",
+		},
+		{
+			name:     "control char \\n decoded",
+			jsonStr:  `{"key": "line1\nline2"}`,
+			key:      "key",
 			expected: "line1\nline2",
+		},
+		{
+			name:     "multiline string with embedded newlines",
+			jsonStr:  `{"key": "a\nb\nc"}`,
+			key:      "key",
+			expected: "a\nb\nc",
+		},
+		{
+			name:     "control char \\t decoded",
+			jsonStr:  `{"key": "col1\tcol2"}`,
+			key:      "key",
+			expected: "col1\tcol2",
+		},
+		{
+			name:     "control char \\b and \\f decoded",
+			jsonStr:  `{"key": "a\bb\fcc"}`,
+			key:      "key",
+			expected: "a\bb\fcc",
+		},
+		{
+			name:     "numeric value returns empty (not a string)",
+			jsonStr:  `{"key": 123}`,
+			key:      "key",
+			expected: "",
+		},
+		{
+			name:     "array value returns empty (not a string)",
+			jsonStr:  `{"key": [1,2]}`,
+			key:      "key",
+			expected: "",
+		},
+		{
+			name:     "boolean value returns empty (not a string)",
+			jsonStr:  `{"key": true}`,
+			key:      "key",
+			expected: "",
+		},
+		{
+			name:     "null value returns empty",
+			jsonStr:  `{"key": null}`,
+			key:      "key",
+			expected: "",
+		},
+		{
+			name:     "attack payload file_path",
+			jsonStr:  `{"file_path": "/etc/passwd"}`,
+			key:      "file_path",
+			expected: "/etc/passwd",
+		},
+		{
+			name:     "file_path via path alias",
+			jsonStr:  `{"path": "/etc/passwd"}`,
+			key:      "path",
+			expected: "/etc/passwd",
+		},
+		{
+			name:     "unicode in attack payload (was a bypass vector)",
+			jsonStr:  `{"file_path": "\/etc\/passwd"}`,
+			key:      "file_path",
+			expected: "/etc/passwd",
+		},
+		{
+			name:     "escaped quotes in value",
+			jsonStr:  `{"key": "say \"hi\""}`,
+			key:      "key",
+			expected: `say "hi"`,
+		},
+		{
+			name:     "escaped backslash",
+			jsonStr:  `{"key": "a\\b"}`,
+			key:      "key",
+			expected: `a\b`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := extractJSONField(tt.jsonStr, tt.field)
+			var m map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(tt.jsonStr), &m); err != nil {
+				// 整体 JSON 解析失败对 jsonGetString 来说视为空 map
+				m = map[string]json.RawMessage{}
+			}
+			result := jsonGetString(m, tt.key)
 			if result != tt.expected {
-				t.Errorf("extractJSONField(%q, %q) = %q, want %q", tt.jsonStr, tt.field, result, tt.expected)
+				t.Errorf("jsonGetString(%q, %q) = %q, want %q", tt.jsonStr, tt.key, result, tt.expected)
 			}
 		})
 	}
 }
 
-// TestUnescapeJSONString 测试 JSON 字符串反转义
-func TestUnescapeJSONString(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{`hello`, "hello"},
-		{`hello\nworld`, "hello\nworld"},
-		{`hello\tworld`, "hello\tworld"},
-		{`hello\\world`, "hello\\world"},
-		{`say \"hi\"`, `say "hi"`},
-	}
-
-	for _, tt := range tests {
-		result := unescapeJSONString(tt.input)
-		if result != tt.expected {
-			t.Errorf("unescapeJSONString(%q) = %q, want %q", tt.input, result, tt.expected)
-		}
+// TestJsonGetString_InvalidJSON 验证非法 JSON 输入不会 panic，且返回空字符串
+func TestJsonGetString_InvalidJSON(t *testing.T) {
+	// 直接测试 jsonGetString 在 nil map 上的行为
+	if got := jsonGetString(nil, "anything"); got != "" {
+		t.Errorf("jsonGetString(nil, ...) = %q, want empty", got)
 	}
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -128,15 +129,18 @@ func BenchmarkBuildDiffPreviewHook(b *testing.B) {
 	}
 }
 
-// BenchmarkExtractJSONField benchmarks JSON field extraction.
-func BenchmarkExtractJSONField(b *testing.B) {
+// BenchmarkJsonGetString benchmarks safe JSON field extraction via stdlib.
+func BenchmarkJsonGetString(b *testing.B) {
 	jsonStr := `{"file_path": "/very/long/path/to/some/file.go", "old_string": "line1\nline2\nline3", "new_string": "replaced1\nreplaced2"}`
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		extractJSONField(jsonStr, "file_path")
-		extractJSONField(jsonStr, "old_string")
-		extractJSONField(jsonStr, "new_string")
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(jsonStr), &m); err == nil {
+			jsonGetString(m, "file_path")
+			jsonGetString(m, "old_string")
+			jsonGetString(m, "new_string")
+		}
 	}
 }
 

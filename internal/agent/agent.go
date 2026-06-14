@@ -3,11 +3,11 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	ap "agentprimordia/pkg"
 	"codecast/cli/internal/budget"
@@ -344,26 +344,29 @@ func buildDiffPreviewHook(prev *diff.Previewer) ap.HookFunc {
 		toolName := hctx.ToolCall.Name
 		switch toolName {
 		case "edit_file", "write_file":
-			// 尝试解析文件路径和内容
-			args := hctx.ToolCall.Args
-			filePath := extractJSONField(args, "file_path")
+			// 使用标准库解析 JSON（安全：正确处理 \uXXXX、嵌套、控制字符等）
+			var argsMap map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(hctx.ToolCall.Args), &argsMap); err != nil {
+				return nil // 解析失败不阻塞，工具自身 Execute 会报错
+			}
+			filePath := jsonGetString(argsMap, "file_path")
 			if filePath == "" {
-				filePath = extractJSONField(args, "path")
+				filePath = jsonGetString(argsMap, "path")
 			}
 			if filePath == "" {
 				return nil
 			}
 
 			if toolName == "edit_file" {
-				oldStr := extractJSONField(args, "old_string")
-				newStr := extractJSONField(args, "new_string")
+				oldStr := jsonGetString(argsMap, "old_string")
+				newStr := jsonGetString(argsMap, "new_string")
 				if oldStr != "" {
 					change := prev.PreviewEdit(filePath, oldStr, newStr)
 					fmt.Println(tui.Styles.Warning.Render("即将修改文件: " + filePath))
 					fmt.Println(tui.NewRenderer().RenderDiff(change.Diff))
 				}
 			} else if toolName == "write_file" {
-				content := extractJSONField(args, "content")
+				content := jsonGetString(argsMap, "content")
 				_, err := os.Stat(filePath)
 				exists := err == nil
 				change := prev.PreviewWrite(filePath, content, exists)
@@ -380,52 +383,18 @@ func buildDiffPreviewHook(prev *diff.Previewer) ap.HookFunc {
 	}
 }
 
-// extractJSONField 从 JSON 字符串中提取字段值（简易实现）
-func extractJSONField(jsonStr, field string) string {
-	// 查找 "field": "value" 模式
-	pattern := `"` + field + `"`
-	idx := strings.Index(jsonStr, pattern)
-	if idx == -1 {
+// jsonGetString 从 map[string]json.RawMessage 安全提取字符串值
+// 使用 encoding/json 标准库，自动正确处理 \uXXXX、嵌套对象、控制字符等
+// （修复了原手写 extractJSONField 的 P0 安全漏洞）
+func jsonGetString(m map[string]json.RawMessage, key string) string {
+	raw, ok := m[key]
+	if !ok {
 		return ""
 	}
-	// 找到冒号后的值
-	afterKey := jsonStr[idx+len(pattern):]
-	// 跳过空白和冒号
-	i := 0
-	for i < len(afterKey) && (afterKey[i] == ' ' || afterKey[i] == ':' || afterKey[i] == '\t' || afterKey[i] == '\n' || afterKey[i] == '\r') {
-		i++
-	}
-	if i >= len(afterKey) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
 		return ""
 	}
-	afterKey = afterKey[i:]
-
-	// 字符串值
-	if afterKey[0] == '"' {
-		// 找到结束引号（处理转义）
-		j := 1
-		for j < len(afterKey) {
-			if afterKey[j] == '\\' && j+1 < len(afterKey) {
-				j += 2
-				continue
-			}
-			if afterKey[j] == '"' {
-				return unescapeJSONString(afterKey[1:j])
-			}
-			j++
-		}
-		return afterKey[1:]
-	}
-
-	return ""
-}
-
-// unescapeJSONString 反转义 JSON 字符串
-func unescapeJSONString(s string) string {
-	s = strings.ReplaceAll(s, `\\`, `\`)
-	s = strings.ReplaceAll(s, `\"`, `"`)
-	s = strings.ReplaceAll(s, `\n`, "\n")
-	s = strings.ReplaceAll(s, `\t`, "\t")
 	return s
 }
 
@@ -439,9 +408,13 @@ func buildUndoHook(mgr *undo.Manager) ap.HookFunc {
 		}
 		toolName := hctx.ToolCall.Name
 		if toolName == "edit_file" || toolName == "write_file" {
-			filePath := extractJSONField(hctx.ToolCall.Args, "file_path")
+			var argsMap map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(hctx.ToolCall.Args), &argsMap); err != nil {
+				return nil // 解析失败不阻塞
+			}
+			filePath := jsonGetString(argsMap, "file_path")
 			if filePath == "" {
-				filePath = extractJSONField(hctx.ToolCall.Args, "path")
+				filePath = jsonGetString(argsMap, "path")
 			}
 			if filePath != "" {
 				_ = mgr.Backup(filePath) // 静默备份，失败不阻塞
