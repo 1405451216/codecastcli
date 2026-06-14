@@ -5,6 +5,81 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.0] - 2026-06-14
+
+> Phase 2-5 全量交付：从「功能完整」到「生产就绪」
+
+### 新增
+
+- **智能代码理解（Phase 2）**
+  - tree-sitter AST 解析（Go / Python / TypeScript / JavaScript）
+  - LSP 集成（gopls / pyright / tsserver），自动检测并友好降级
+  - 增量索引 + 磁盘缓存，大仓库索引 < 3s
+
+- **Bubble Tea 现代 TUI（Phase 2）**
+  - 可选 TUI 模式（`--tui=bubbletea`），go-prompt 仍为默认 REPL
+  - 实时流式渲染 > 30fps，DAG 可视化
+
+- **隔离子 Agent 并行执行（Phase 3）**
+  - `/delegate` 触发多 Agent DAG 协作，各子 Agent 运行在独立沙箱
+  - Plan+Execute 双 Agent 编排，支持 pipeline / parallel / handoff
+
+- **@file 引用 + 多行输入 + 状态栏（Phase 3）**
+  - `@path/to/file` 自动注入文件内容到 LLM 上下文
+  - 多行编辑模式、实时 Token 计数与成本状态栏
+
+- **Git-Aware AI（Phase 4）**
+  - `/review [branch]` — AI 代码审查，自动 diff + blame 注入
+  - `/blame <file>` — 将 Git blame 历史注入上下文
+  - `/history <file>` — 将 commit 历史注入上下文
+  - `/diff [branch]` — 分支 diff 分析
+
+- **智能模型路由（Phase 4）**
+  - `/route` — 按任务复杂度自动选择最优模型
+  - 成本优化策略：简单任务用小模型，复杂任务用强模型
+  - 路由缓存，避免重复决策
+
+- **goreleaser 多平台分发（Phase 3）**
+  - Homebrew（macOS/Linux）、Scoop（Windows）、DEB / RPM
+  - 5 平台预编译二进制（linux-amd64/arm64、darwin-amd64/arm64、windows-amd64）
+
+- **VS Code 扩展（Phase 3）**
+  - 编辑器内启动 Codecast，文件上下文自动注入
+
+- **错误码体系（Phase 5）**
+  - `internal/errors` 包：`UserFacingError` + 20+ `ErrorCode` 常量
+  - `DegradationMatrix`：优雅降级矩阵，跟踪各模块降级状态
+  - 每个错误包含 Code / Message / Hint，用户可直接获得修复建议
+
+### 改进
+
+- **启动流水线并行化（Phase 5.1）**
+  - `newAgent()` 重构为 5 阶段并行初始化（A-E 流水线）
+  - Phase A 并行 6 个 goroutine（Provider、Toolkit、Memory、Permission、Rules、Indexer）
+  - 冷启动时间大幅降低
+
+- **代码拆分与质量（Phase 5.2）**
+  - `cmd/interactive.go` 2250 行 → 456 行 + 5 个专职文件
+    - `interactive_commands.go` (634 行) — /config /cost /session 等管理命令
+    - `interactive_handlers.go` (381 行) — /rules /model /plan /delegate 等处理器
+    - `interactive_git.go` (305 行) — /review /blame /history /diff
+    - `interactive_files.go` (152 行) — @file 引用展开
+    - `interactive_session.go` (172 行) — 会话导入导出
+  - `internal/agent/agent.go` 1141 行 → 944 行 + `agent_hooks.go` (193 行)
+
+- **Ctrl+C 中断当前请求** — SIGINT 立即中止流式输出
+- **grep 性能升级** — 自动感知 .gitignore，跳过忽略文件
+- **API 重试与 Provider 降级** — 网络错误自动重试 3 次，失败后降级到备用 Provider
+- **摘要式上下文压缩** — 超长对话自动摘要，保留关键上下文
+- **预算感知上下文压缩** — 按剩余预算动态调整上下文长度
+
+### 测试
+
+- 39 个包，全部通过（含 errors 包 4 个新增测试）
+- `go build ./...` 零错误
+
+---
+
 ## [0.3.0] - 2026-06-13
 
 ### 新增

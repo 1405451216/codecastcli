@@ -69,10 +69,10 @@ type Model struct {
 	quit         bool
 
 	// Agent 集成
-	agent    AgentRunner
-	ctx      context.Context
-	cancel   context.CancelFunc
-	mu       sync.Mutex
+	agent  AgentRunner
+	ctx    context.Context
+	cancel context.CancelFunc
+	mu     *sync.Mutex // 指针避免值拷贝（tea.Model 接口按值传递）
 	// 当前正在累积的 assistant 消息内容
 	streamingContent strings.Builder
 
@@ -147,6 +147,7 @@ func NewModel() Model {
 		quit:      false,
 		ctx:       ctx,
 		cancel:    cancel,
+		mu:        &sync.Mutex{},
 	}
 }
 

@@ -2,7 +2,7 @@
 
 ![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat-square&logo=go)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
-![Version](https://img.shields.io/badge/Version-0.3.1-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-0.4.0-blue?style=flat-square)
 
 基于 [AgentPrimordia](https://github.com/agentprimordia) 框架的 AI 终端 Agent 工具，支持多 LLM Provider、智能代码理解、三级权限模型、Plan+Execute 双 Agent 协作等企业级特性。
 
@@ -10,14 +10,20 @@
 
 - 🌐 **13+ LLM Provider 支持** — OpenAI / Anthropic / Gemini / Ollama / DeepSeek / Qwen / GLM / Azure / Cohere / Mistral 等
 - 🧠 **智能代码理解** — 自动索引代码库结构，注入系统提示词，上下文感知对话
+- 🌳 **tree-sitter AST 解析** — Go/Python/JavaScript/TypeScript 精确语法分析，提取函数、类、变量等符号
+- 🔌 **LSP 语言服务集成** — gopls / pyright / tsserver 深度集成，提供定义跳转、引用查找
+- 🫖 **Bubble Tea TUI** — 基于 Bubble Tea 的现代化终端 UI，支持流式渲染、Spinner、进度条
+- 🤖 **隔离子 Agent 并行** — Plan+Execute 双 Agent DAG 编排，每个子任务独立内存，互不干扰
+- 📁 **@file 智能引用** — 输入 @<path> 自动展开文件内容，支持语言检测、截断、补全
 - 🔐 **三级权限模型** — `suggest`（建议）/ `auto-edit`（自动编辑）/ `full-auto`（全自动），精细控制工具调用审批
 - 📺 **流式 Markdown 实时渲染** — 基于 Glamour 的高质量终端 Markdown 渲染
 - 🤝 **Plan+Execute 双 Agent 协作** — 规划 Agent 制定方案，执行 Agent 落地实现
 - 🔄 **自动 Git Checkpoint + Undo 回滚** — 文件修改前自动创建检查点，支持一键撤销
+- 🌿 **Git-Aware AI** — 自动注入 blame、diff、commit 历史，让 AI 理解代码演变上下文
+- 🔀 **智能模型路由** — 根据输入复杂度自动选择 Simple/Medium/Complex 模型，节省成本
 - 🔌 **MCP 协议扩展** — 10+ 内置模板（filesystem / github / postgres / puppeteer 等）
 - 💰 **成本预算控制** — 每日/每会话预算上限，Token 用量追踪，超限自动中断
-- 🏖️ **沙箱隔离执行** — 危险命令在沙箱中运行，保障系统安全
-- 🖼️ **多模态图片分析** — 支持截图分析、本地图片理解
+- 🏗️ **多平台分发** — goreleaser 支持 Linux/macOS/Windows 多架构，提供 Homebrew/Scoop/DEB/RPM
 - 🧩 **插件生态系统** — 可扩展的插件注册与管理机制
 
 ## 快速安装
@@ -84,7 +90,13 @@ codecast exec "解释这个项目的架构"
 | `/index` | 重建索引 |
 | `/mode` | 切换权限模式 |
 | `/screenshot` | 截图分析 |
-| `/ab [enable\|disable\|reset\|suggest\|apply\|export\|epsilon]` | A/B 自动收敛管理（带 Wilson 95% CI + 显著性检验 + HTML 导出） |
+| `/review [branch] [--json] [--pr]` | AI 审查代码变更（含 blame 注入） |
+| `/blame <file> [line]` | 查看文件 Git Blame 信息 |
+| `/history <file>` | 查看文件修改历史 |
+| `/diff [branch]` | 查看当前代码变更 |
+| `/route [on\|off\|test]` | 智能模型路由管理 |
+| `/prompt [list\|use\|show\|current\|reload]` | 提示词变体管理 |
+| `/ab [enable\|disable\|reset\|suggest\|apply\|epsilon]` | A/B 自动收敛管理（带 Wilson 95% CI + 显著性检验 + HTML 导出） |
 | `/fb [y\|n\|show\|enable\|disable]` | 主动反馈 A/B 评估（撤销会自动联动） |
 
 ## 配置项

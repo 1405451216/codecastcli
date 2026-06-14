@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,8 +24,8 @@ import (
 	"codecast/cli/internal/model"
 	"codecast/cli/internal/permission"
 	"codecast/cli/internal/provider"
-	"codecast/cli/internal/rules"
 	"codecast/cli/internal/routing"
+	"codecast/cli/internal/rules"
 	"codecast/cli/internal/sandbox"
 	sessionpkg "codecast/cli/internal/session"
 	customtools "codecast/cli/internal/tools"
@@ -57,8 +56,8 @@ type CodecastAgent struct {
 	// F8: Budget Controller
 	budgetCtrl *budget.Controller
 	// F10: 懒加载模块（首次访问时才初始化）
-	lazySandbox   *lazy.Value[*sandbox.Executor]
-	lazyAutoMem   *lazy.Value[*automem.AutoPersister]
+	lazySandbox *lazy.Value[*sandbox.Executor]
+	lazyAutoMem *lazy.Value[*automem.AutoPersister]
 	// F04: 启动时累积的 MCP 警告，runInteractive 渲染时展示
 	mcpWarnings []MCPWarning
 	// F05: 共享的 SQLite 连接（与 session.Manager 共享），
@@ -92,152 +91,207 @@ type CodecastAgent struct {
 }
 
 // newAgent 内部工厂函数
+//
+// Phase 5.1: 启动流水线并行化。
+// 将原本串行的初始化步骤按依赖关系拆分为多个阶段，
+// 独立模块使用 goroutine 并行初始化，显著降低冷启动时间。
 func newAgent(cfg *config.Config, sessionID string) (*CodecastAgent, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
-	llmProvider, err := provider.CreateProvider(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("创建 Provider 失败: %w\n💡 请检查: 1) API Key 是否正确 2) Provider 配置是否正确 3) 使用 /model 切换到其他模型", err)
+	// ── Phase A: 并行初始化无依赖模块 ──────────────────────────
+	type providerResult struct {
+		lp  ap.Provider
+		err error
+	}
+	type registryResult struct {
+		reg *ap.ToolRegistry
+		err error
+	}
+	type memoryResult struct {
+		mem      ap.Memory
+		sharedDB *sql.DB
+		err      error
+	}
+	type permResult struct {
+		mgr *permission.Manager
+		err error
+	}
+	type rulesResult struct {
+		rules string
+	}
+	type indexResult struct {
+		idx *indexer.Indexer
+		err error
 	}
 
-	registry, err := ap.DefaultToolkit(ap.ToolkitConfig{
-		RootDir:     ".",
-		EnableFS:    true,
-		EnableShell: true,
-		EnableWeb:   true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("创建工具集失败: %w", err)
-	}
+	var (
+		provR  providerResult
+		regR   registryResult
+		memR   memoryResult
+		permR  permResult
+		rulesR rulesResult
+		idxR   indexResult
+		wgA    sync.WaitGroup
+	)
 
-	editTool := customtools.NewEditFileTool()
-	registry.Register(editTool)
-	grepTool := customtools.NewGrepSearchTool()
-	registry.Register(grepTool)
-	globTool := customtools.NewGlobSearchTool()
-	registry.Register(globTool)
-	listTool := customtools.NewListFilesTool()
-	registry.Register(listTool)
-	// delete_file 接受 *undo.Manager 以共享 agent 的 undo 栈；
-	// 这里传 nil，由 NewDeleteFileTool 内部回退到默认 undo manager。
-	// 后续可改造为延迟注入（先注册占位、undoMgr 创建后绑定），但 v0.3
-	// 暂保持简单 — delete_file 自带备份栈，agent Undo 命令暂不覆盖它。
-	deleteTool := customtools.NewDeleteFileTool(nil)
-	registry.Register(deleteTool)
-	multiEditTool := customtools.NewMultiEditTool()
-	registry.Register(multiEditTool)
-	// 增强 read_file 覆盖 AP 默认（AP DefaultToolkit 注册的是
-	// "filesystem" 多操作工具，而非同名 "read_file"，所以不会冲突）
-	readTool := customtools.NewReadFileTool()
-	registry.Register(readTool)
+	wgA.Add(6)
 
-	mcpReg, mcpWarnings, _ := ConnectMCPServers(registry)
-	// F-04：MCP 启动告警暂存到 agent 结构，由 runInteractive 渲染时显示
-	_ = mcpWarnings
+	// A1: Provider
+	go func() {
+		defer wgA.Done()
+		provR.lp, provR.err = provider.CreateProvider(cfg)
+	}()
 
-	memPath := filepath.Join(config.GetConfigDir(), "memory.db")
-	memory, err := ap.NewSQLiteStore(memPath)
-	if err != nil {
-		memory, err = ap.WithInMemory()
+	// A2: Toolkit + 自定义工具注册
+	go func() {
+		defer wgA.Done()
+		reg, err := ap.DefaultToolkit(ap.ToolkitConfig{
+			RootDir:     ".",
+			EnableFS:    true,
+			EnableShell: true,
+			EnableWeb:   true,
+		})
 		if err != nil {
-			return nil, fmt.Errorf("初始化记忆存储失败: %w", err)
+			regR.err = err
+			return
 		}
+		reg.Register(customtools.NewEditFileTool())
+		reg.Register(customtools.NewGrepSearchTool())
+		reg.Register(customtools.NewGlobSearchTool())
+		reg.Register(customtools.NewListFilesTool())
+		reg.Register(customtools.NewDeleteFileTool(nil))
+		reg.Register(customtools.NewMultiEditTool())
+		reg.Register(customtools.NewReadFileTool())
+		regR.reg = reg
+	}()
+
+	// A3: Memory store + shared DB
+	go func() {
+		defer wgA.Done()
+		memPath := filepath.Join(config.GetConfigDir(), "memory.db")
+		mem, err := ap.NewSQLiteStore(memPath)
+		if err != nil {
+			mem, err = ap.WithInMemory()
+			if err != nil {
+				memR.err = fmt.Errorf("初始化记忆存储失败: %w", err)
+				return
+			}
+		}
+		var sdb *sql.DB
+		if mem != nil {
+			sdb = mem.GetDB()
+		}
+		memR.mem = mem
+		memR.sharedDB = sdb
+	}()
+
+	// A4: Permission manager
+	go func() {
+		defer wgA.Done()
+		permMode := cfg.PermissionMode
+		if permMode == "" {
+			permMode = "auto-edit"
+		}
+		mgr, err := permission.NewManagerFromString(permMode)
+		if err != nil {
+			permR.err = fmt.Errorf("创建权限管理器失败: %w", err)
+			return
+		}
+		mgr.BuildHITLConfig()
+		permR.mgr = mgr
+	}()
+
+	// A5: Project rules
+	go func() {
+		defer wgA.Done()
+		rulesR.rules = loadProjectRules()
+	}()
+
+	// A6: Indexer (最慢的模块之一，与 Provider 并行)
+	go func() {
+		defer wgA.Done()
+		idx := indexer.NewIndexer(getCurrentDir())
+		ui.StartSpinner("正在构建代码库索引...")
+		if err := idx.BuildWithCallback(func(p string) {
+			if idx.GetIndex() != nil && idx.GetIndex().TotalFiles%50 == 0 {
+				ui.UpdateSpinnerMessage(fmt.Sprintf("索引中: %d 个文件...", idx.GetIndex().TotalFiles))
+			}
+		}); err != nil {
+			idxR.err = err
+		}
+		ui.StopSpinner()
+		idxR.idx = idx
+	}()
+
+	wgA.Wait()
+
+	// 收集 Phase A 错误
+	if provR.err != nil {
+		return nil, fmt.Errorf("创建 Provider 失败: %w\n💡 请检查: 1) API Key 是否正确 2) Provider 配置是否正确 3) 使用 /model 切换到其他模型", provR.err)
+	}
+	if regR.err != nil {
+		return nil, fmt.Errorf("创建工具集失败: %w", regR.err)
+	}
+	if memR.err != nil {
+		return nil, memR.err
+	}
+	if permR.err != nil {
+		return nil, permR.err
+	}
+	if idxR.err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ 代码库索引失败: %v\n", idxR.err)
 	}
 
-	// F-05：暴露底层 *sql.DB 供 session.Manager 共享，
-	// 避免双开同一个 SQLite 文件导致的锁竞争。
-	// 内存模式下 GetDB() 可能为 nil；只有磁盘模式才有意义。
-	var sharedDB *sql.DB
-	if memory != nil {
-		sharedDB = memory.GetDB()
-	}
-	// 注入到 session 包的进程级共享槽，让 session.NewManager() 自动复用
+	registry := regR.reg
+	memory := memR.mem
+	sharedDB := memR.sharedDB
+	permMgr := permR.mgr
+	idx := idxR.idx
+	projectRules := rulesR.rules
+	llmProvider := provR.lp
+
+	// 注入 sharedDB 到 session 包
 	sessionpkg.SetSharedDB(sharedDB)
 
-	// 权限管理器
-	permMode := cfg.PermissionMode
-	if permMode == "" {
-		permMode = "auto-edit"
-	}
-	permMgr, err := permission.NewManagerFromString(permMode)
-	if err != nil {
-		return nil, fmt.Errorf("创建权限管理器失败: %w", err)
-	}
-
-	// 初始化 HITL 配置（构建 InterruptPoints、AutoApproveTools、OnInterrupt 回调）
-	permMgr.BuildHITLConfig()
-
+	// ── Phase B: SafeMode + 权限应用 ──────────────────────────
 	if cfg.SafeMode {
-		// SafeMode: 从工具注册表中真正移除危险工具，而非仅加黑名单。
-		// 这样 LLM 根本看不到这些工具，不会尝试调用。
 		registry.Unregister("shell_execute")
-		// web_request / web_fetch 可能不在 registry 中（取决于 DefaultToolkit 配置），
-		// Unregister 不存在的工具是 no-op，安全调用。
 		registry.Unregister("web_request")
 		registry.Unregister("web_fetch")
-		// 同时加入黑名单，防止 MCP 工具或动态注册的同名工具绕过
 		permMgr.AddDeny("shell_execute")
 		permMgr.AddDeny("web_request")
 		permMgr.AddDeny("web_fetch")
 	}
-
-	// HITL 集成：为需要确认的工具设置 ToolPermission.ConfirmFunc。
-	// 这是 AP 框架 executor 层面的权限检查（在 Hook 之前执行），
-	// 与 buildPermHook 形成双重保障。
-	// ConfirmFunc 返回 true=允许，false=拒绝。
 	applyToolPermissions(registry, permMgr)
 
-	// 创建 Diff 预览器
+	// ── Phase C: MCP 连接 + 独立模块 ──────────────────────────
+	mcpReg, mcpWarnings, _ := ConnectMCPServers(registry)
+	_ = mcpWarnings
+
 	diffPrev := diff.NewPreviewer()
-
-	// 创建 Undo 管理器（F2）
 	undoMgr := undo.NewManager(getCurrentDir())
-
-	// 创建 Git Checkpoint 管理器（F4）
 	cpCfg := checkpoint.DefaultConfig()
 	cpCfg.Enabled = cfg.AutoCheckpoint
 	cpCfg.AutoStash = cfg.AutoStash
 	checkpointMgr := checkpoint.NewManager(getCurrentDir(), cpCfg)
-
-	// 创建 Budget 控制器（F8）
 	budgetCtrl := budget.NewController(budget.BudgetConfig{
-		DailyLimitUSD:    cfg.DailyBudgetUSD,
-		SessionLimitUSD:  cfg.SessionBudgetUSD,
-		DailyTokenLimit:  cfg.DailyTokenLimit,
+		DailyLimitUSD:     cfg.DailyBudgetUSD,
+		SessionLimitUSD:   cfg.SessionBudgetUSD,
+		DailyTokenLimit:   cfg.DailyTokenLimit,
 		SessionTokenLimit: cfg.SessionTokenLimit,
 	})
 
-	// 使用 Hooks 实现权限拦截 + Diff 预览 + Undo 备份 + Checkpoint
+	// ── Phase D: Hooks + System Prompt + Agent ──────────────────
 	hooks := ap.NewHookManager()
 	hooks.Register(ap.HookBeforeTool, buildPermHook(permMgr))
 	hooks.Register(ap.HookBeforeTool, buildDiffPreviewHook(diffPrev))
 	hooks.Register(ap.HookBeforeTool, buildUndoHook(undoMgr))
 	hooks.Register(ap.HookBeforeTool, buildCheckpointHook(checkpointMgr))
 
-	// 加载项目规则（含自动学习规则）
-	projectRules := loadProjectRules()
-
-	// 创建代码库索引器（先构建，以便注入系统提示词）
-	// F-07：带 spinner 的构建（替代静默同步），大仓库给用户视觉反馈
-	idx := indexer.NewIndexer(getCurrentDir())
-	ui.StartSpinner("正在构建代码库索引...")
-	if err := idx.BuildWithCallback(func(p string) {
-		// 回调每次可能非常频繁（每文件一次），所以仅每 N 个文件更新一次 spinner
-		if idx.GetIndex() != nil && idx.GetIndex().TotalFiles%50 == 0 {
-			ui.UpdateSpinnerMessage(fmt.Sprintf("索引中: %d 个文件...", idx.GetIndex().TotalFiles))
-		}
-	}); err != nil {
-		// 索引失败不阻塞 Agent — 系统提示词退化为不含文件树
-		fmt.Fprintf(os.Stderr, "⚠ 代码库索引失败: %v\n", err)
-	}
-	ui.StopSpinner()
-
-	// 创建系统提示词（注入项目规则 + 代码库文件树）
-	// 优先走 PromptResolver（支持 YAML 外部化变体 + A/B 策略），失败则回落到 buildSystemPrompt。
+	// System prompt（依赖 rules + indexer，两者已在 Phase A 并行完成）
 	resolver := DefaultResolver()
-	// 加载项目级 .codecast/prompts/（cwd 或 cfg.PromptProjectDir 指定的目录）
 	projectPromptsDir := cfg.PromptProjectDir
 	if projectPromptsDir == "" {
 		projectPromptsDir = ".codecast/prompts"
@@ -257,9 +311,6 @@ func newAgent(cfg *config.Config, sessionID string) (*CodecastAgent, error) {
 		scopes = []string{"."}
 	}
 
-	// F-01 修复：把 FileScopePolicy 真正注入到工具集。
-	// 之前的 ap.WithFileScope 只写到 agent metadata，从未被框架读取，
-	// 导致 LLM 仍可读 /etc/passwd 等越界文件。
 	scopePolicy := ap.NewFileScopePolicy()
 	scopePolicy.SetScope("codecast", scopes)
 	ap.RegistryWithScopePolicy(registry, scopePolicy, "codecast")
@@ -278,21 +329,36 @@ func newAgent(cfg *config.Config, sessionID string) (*CodecastAgent, error) {
 		sessionID = session.SessionID()
 	}
 
-	var tracker *cost.Tracker
-	if t, err := cost.NewTracker(); err == nil {
-		tracker = t
+	// ── Phase E: 并行初始化非关键模块 ──────────────────────────
+	type trackerResult struct {
+		t *cost.Tracker
 	}
+	var trackR trackerResult
+	var wgE sync.WaitGroup
+	wgE.Add(3)
 
-	// 创建模型切换器
-	modelSwitch := model.NewSwitcher(cfg)
+	var modelSwitch *model.Switcher
+	var router *routing.ModelRouter
+	var tuiRenderer *tui.Renderer
 
-	// 创建智能模型路由器
-	router := routing.NewModelRouter(cfg.Routing)
+	go func() {
+		defer wgE.Done()
+		if t, err := cost.NewTracker(); err == nil {
+			trackR.t = t
+		}
+	}()
+	go func() {
+		defer wgE.Done()
+		modelSwitch = model.NewSwitcher(cfg)
+		router = routing.NewModelRouter(cfg.Routing)
+	}()
+	go func() {
+		defer wgE.Done()
+		tuiRenderer = tui.NewRenderer()
+	}()
+	wgE.Wait()
 
-	// 创建 TUI 渲染器
-	tuiRenderer := tui.NewRenderer()
-
-	// F10: 懒加载非关键模块（延迟到首次使用时初始化，减少启动时间）
+	// F10: 懒加载非关键模块
 	lazySandbox := lazy.NewValue(func() (*sandbox.Executor, error) {
 		sandboxCfg := sandbox.DefaultConfig()
 		return sandbox.NewExecutor(sandboxCfg), nil
@@ -308,7 +374,7 @@ func newAgent(cfg *config.Config, sessionID string) (*CodecastAgent, error) {
 		registry:      registry,
 		session:       session,
 		sessionID:     sessionID,
-		costTracker:   tracker,
+		costTracker:   trackR.t,
 		mcpRegistry:   mcpReg,
 		permMgr:       permMgr,
 		indexer:       idx,
@@ -326,201 +392,6 @@ func newAgent(cfg *config.Config, sessionID string) (*CodecastAgent, error) {
 		routerPrompt:  NewRouterCache(),
 		router:        router,
 	}, nil
-}
-
-// buildPermHook 构建权限检查 Hook
-func buildPermHook(mgr *permission.Manager) ap.HookFunc {
-	return func(ctx context.Context, hctx *ap.HookContext) error {
-		if hctx.ToolCall == nil {
-			return nil
-		}
-
-		toolName := hctx.ToolCall.Name
-
-		// 检查是否被禁止
-		if mgr.IsDenied(toolName) {
-			return fmt.Errorf("工具 %s 已被安全模式禁止", toolName)
-		}
-
-		// 检查是否需要确认
-		if mgr.ShouldApprove(toolName) {
-			args := hctx.ToolCall.Args
-
-			// F-03 已修复：go-prompt 在调用 executor 回调期间会把终端
-			// 切回 cooked mode（见 c-bata/go-prompt prompt.go 的 setUp/tearDown），
-			// 所以 ConfirmPrompt 直接读 stdin 不会与 go-prompt 抢输入。
-			// permission.ConfirmPrompt 用了 ANSI 颜色 + 立即 flush 把权限
-			// 提示与正常 prompt 视觉上区分开。
-			result := permission.ConfirmPrompt(toolName, args)
-
-			switch result.Action {
-			case permission.ActionAllow:
-				return nil
-			case permission.ActionDeny:
-				return fmt.Errorf("用户拒绝执行工具 %s", toolName)
-			case permission.ActionAlwaysAllow:
-				mgr.AddAutoAllow(toolName)
-				return nil
-			case permission.ActionEditArgs:
-				// 修改参数后放行
-				if result.ModifiedArgs != "" {
-					hctx.ToolCall.Args = result.ModifiedArgs
-				}
-				return nil
-			default:
-				return fmt.Errorf("用户拒绝执行工具 %s", toolName)
-			}
-		}
-
-		return nil
-	}
-}
-
-// applyToolPermissions 为注册表中的工具设置 AP 框架级别的 ToolPermission。
-//
-// 这是 HITL 集成在 executor 层面的体现：
-//   - 需要确认的工具（ShouldApprove=true）设置 RequireConfirmation=true + ConfirmFunc
-//   - ConfirmFunc 调用 permission.ConfirmPrompt 获取用户输入
-//   - ModeFullAuto 下所有工具不设 ConfirmFunc（自动放行）
-//   - SafeMode 下被禁止的工具已在上方 Unregister，不会到达此处
-//
-// 与 buildPermHook 的关系：两者形成双重保障。
-// ToolPermission 在 executor.Execute() 内部执行（更底层），
-// buildPermHook 在 ReAct 循环的 HookBeforeTool 阶段执行（更上层）。
-// 实际上 buildPermHook 先执行（因为 HookBeforeTool 在 executor 之前），
-// 所以 ConfirmPrompt 只会被调用一次。
-func applyToolPermissions(registry *ap.ToolRegistry, mgr *permission.Manager) {
-	for _, toolName := range registry.List() {
-		if !mgr.ShouldApprove(toolName) {
-			continue
-		}
-		// 为需要确认的工具设置 ConfirmFunc
-		perm := ap.ToolPermission{
-			RequireConfirmation: true,
-			ConfirmFunc: func(name string, args json.RawMessage) bool {
-				result := permission.ConfirmPrompt(name, string(args))
-				switch result.Action {
-				case permission.ActionAllow:
-					return true
-				case permission.ActionAlwaysAllow:
-					mgr.AddAutoAllow(name)
-					return true
-				case permission.ActionEditArgs:
-					// ConfirmFunc 无法修改参数，只能允许/拒绝
-					// 参数修改由 buildPermHook 处理
-					return true
-				default:
-					return false
-				}
-			},
-		}
-		_ = registry.SetPermission(toolName, perm)
-	}
-}
-
-// buildDiffPreviewHook 构建 Diff 预览 Hook（DI-3: edit_file/write_file 执行前自动 diff 预览）
-func buildDiffPreviewHook(prev *diff.Previewer) ap.HookFunc {
-	return func(ctx context.Context, hctx *ap.HookContext) error {
-		if hctx.ToolCall == nil || prev == nil {
-			return nil
-		}
-
-		toolName := hctx.ToolCall.Name
-		switch toolName {
-		case "edit_file", "write_file":
-			// 使用标准库解析 JSON（安全：正确处理 \uXXXX、嵌套、控制字符等）
-			var argsMap map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(hctx.ToolCall.Args), &argsMap); err != nil {
-				return nil // 解析失败不阻塞，工具自身 Execute 会报错
-			}
-			filePath := jsonGetString(argsMap, "file_path")
-			if filePath == "" {
-				filePath = jsonGetString(argsMap, "path")
-			}
-			if filePath == "" {
-				return nil
-			}
-
-			if toolName == "edit_file" {
-				oldStr := jsonGetString(argsMap, "old_string")
-				newStr := jsonGetString(argsMap, "new_string")
-				if oldStr != "" {
-					change := prev.PreviewEdit(filePath, oldStr, newStr)
-					fmt.Println(tui.Styles.Warning.Render("即将修改文件: " + filePath))
-					fmt.Println(tui.NewRenderer().RenderDiff(change.Diff))
-				}
-			} else if toolName == "write_file" {
-				content := jsonGetString(argsMap, "content")
-				_, err := os.Stat(filePath)
-				exists := err == nil
-				change := prev.PreviewWrite(filePath, content, exists)
-				if exists {
-					fmt.Println(tui.Styles.Warning.Render("即将覆盖文件: " + filePath))
-				} else {
-					fmt.Println(tui.Styles.Info.Render("即将创建文件: " + filePath))
-				}
-				fmt.Println(tui.NewRenderer().RenderDiff(change.Diff))
-			}
-		}
-
-		return nil
-	}
-}
-
-// jsonGetString 从 map[string]json.RawMessage 安全提取字符串值
-// 使用 encoding/json 标准库，自动正确处理 \uXXXX、嵌套对象、控制字符等
-// （修复了原手写 extractJSONField 的 P0 安全漏洞）
-func jsonGetString(m map[string]json.RawMessage, key string) string {
-	raw, ok := m[key]
-	if !ok {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return ""
-	}
-	return s
-}
-
-// buildUndoHook 构建 Undo 备份 Hook（F2: edit_file/write_file 执行前自动备份）
-// 注意：delete_file 内部已经自行 Backup（用自己的 undo 栈），不在此 hook 范围。
-// 集成到 agent.undoMgr 需要 delete_file 接受注入式 manager — 见 agent.go:102 注释。
-func buildUndoHook(mgr *undo.Manager) ap.HookFunc {
-	return func(ctx context.Context, hctx *ap.HookContext) error {
-		if hctx.ToolCall == nil || mgr == nil {
-			return nil
-		}
-		toolName := hctx.ToolCall.Name
-		if toolName == "edit_file" || toolName == "write_file" {
-			var argsMap map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(hctx.ToolCall.Args), &argsMap); err != nil {
-				return nil // 解析失败不阻塞
-			}
-			filePath := jsonGetString(argsMap, "file_path")
-			if filePath == "" {
-				filePath = jsonGetString(argsMap, "path")
-			}
-			if filePath != "" {
-				_ = mgr.Backup(filePath) // 静默备份，失败不阻塞
-			}
-		}
-		return nil
-	}
-}
-
-// buildCheckpointHook 构建 Git Checkpoint Hook（F4: 会话级检查点，避免每次工具调用都 stash）
-func buildCheckpointHook(mgr *checkpoint.Manager) ap.HookFunc {
-	return func(ctx context.Context, hctx *ap.HookContext) error {
-		if hctx.ToolCall == nil || mgr == nil {
-			return nil
-		}
-		// 仅对文件修改工具创建检查点
-		toolName := hctx.ToolCall.Name
-		if toolName != "edit_file" && toolName != "write_file" && toolName != "delete_file" {
-			return nil
-		}
-		return mgr.AutoCheckpoint(toolName, hctx.ToolCall.Args)
-	}
 }
 
 // New 创建一个新的 Codecast Agent
