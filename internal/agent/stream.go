@@ -14,6 +14,12 @@ import (
 )
 
 // StreamProcess 以流式方式处理用户输入，实时输出 token（DI-6: 使用 tui.StreamPrinter）
+//
+// 重试策略（Task 1.5 — API 重试与 Provider 降级）：
+//   - 只在 StreamRun **启动阶段**失败时重试（429/5xx/timeout/connection reset 等）
+//   - 流已经开始（产生 token）后的错误不重试——重试会重复输出已产生的 token
+//   - 实现：把 StreamProcess body 拆为 runStreamOnce，外层用 WithRetry 包裹
+//   - A/B 选变体和 StartRound 在 WithRetry **之外**：每轮只算一次（路由决策稳定）
 func (a *CodecastAgent) StreamProcess(ctx context.Context, userInput string) error {
 	// F8: 预算检查
 	if a.budgetCtrl != nil {
@@ -27,13 +33,31 @@ func (a *CodecastAgent) StreamProcess(ctx context.Context, userInput string) err
 
 	msg := ap.UserMessage(userInput)
 	// 任务感知路由：每轮根据用户输入 + 工具诉求重选变体
+	// （在 WithRetry 之外，避免重试时重复 StartRound/重复选变体）
 	a.selectVariantForInput(userInput, false)
 	if a.ab != nil {
 		a.ab.StartRound(a.currentVariant)
 	}
+
+	retryCfg := DefaultRetryConfig()
+	err := WithRetry(ctx, retryCfg, func() error {
+		return a.runStreamOnce(ctx, msg, userInput)
+	})
+	if err != nil {
+		// 包一层用户友好的提示；%w 保留原始 err 以便 errors.Is/As 链路
+		return fmt.Errorf("启动流式输出失败: %w\n💡 请检查: 1) 模型 (%s) 是否正确 2) Provider (%s) 是否可用 3) API Key 是否有效 4) 网络连接是否正常", err, a.config.Model, a.config.Provider)
+	}
+	return nil
+}
+
+// runStreamOnce 单次流式处理（不含重试），被 StreamProcess 用 WithRetry 包裹。
+// 返回 error 时会触发 StreamProcess 层的重试判断。
+func (a *CodecastAgent) runStreamOnce(ctx context.Context, msg ap.Message, userInput string) error {
 	streamCh, err := a.agent.StreamRun(ctx, msg)
 	if err != nil {
-		return fmt.Errorf("启动流式输出失败: %w\n💡 请检查: 1) 模型 (%s) 是否正确 2) Provider (%s) 是否可用 3) API Key 是否有效 4) 网络连接是否正常", err, a.config.Model, a.config.Provider)
+		// StreamRun 启动失败 → 透传原始 error 给 WithRetry 判断是否可重试
+		// 仅在重试用尽后才包装成用户可读消息
+		return err
 	}
 
 	fmt.Println()
