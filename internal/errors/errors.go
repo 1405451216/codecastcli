@@ -20,6 +20,7 @@ package errors
 import (
 	"errors"
 	"fmt"
+	"sync"
 )
 
 // ErrorCode 是机器可读的错误码
@@ -157,6 +158,7 @@ type DegradationStatus struct {
 
 // DegradationMatrix 跟踪各模块的降级状态
 type DegradationMatrix struct {
+	mu       sync.RWMutex
 	statuses map[string]*DegradationStatus
 }
 
@@ -169,11 +171,20 @@ func NewDegradationMatrix() *DegradationMatrix {
 
 // ReportDegradation 报告某个模块的降级状态
 func (m *DegradationMatrix) ReportDegradation(module string, status *DegradationStatus) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.statuses[module] = status
 }
 
 // GetOverallLevel 返回全局降级级别（取最高）
 func (m *DegradationMatrix) GetOverallLevel() DegradationLevel {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.overallLevelLocked()
+}
+
+// overallLevelLocked 无锁版本，调用方必须已持有读锁或写锁
+func (m *DegradationMatrix) overallLevelLocked() DegradationLevel {
 	maxLevel := DegradationNone
 	for _, s := range m.statuses {
 		if s.Level > maxLevel {
@@ -190,10 +201,13 @@ func (m *DegradationMatrix) IsDegraded() bool {
 
 // Summary 返回降级摘要信息
 func (m *DegradationMatrix) Summary() string {
-	if !m.IsDegraded() {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	level := m.overallLevelLocked()
+	if level == DegradationNone {
 		return "全功能运行中"
 	}
-	summary := fmt.Sprintf("降级级别: %d\n", m.GetOverallLevel())
+	summary := fmt.Sprintf("降级级别: %d\n", level)
 	for module, status := range m.statuses {
 		summary += fmt.Sprintf("  [%s] %s (级别=%d)\n", module, status.Reason, status.Level)
 	}
