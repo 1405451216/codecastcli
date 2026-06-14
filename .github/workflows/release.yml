@@ -3,65 +3,33 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
 
 jobs:
-  release:
-    name: Release
+  goreleaser:
+    name: GoReleaser
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: "1.22"
+          cache: true
 
-      - name: Run tests
-        run: go test ./... -timeout=5m
-
-      - name: Build all platforms
-        run: |
-          mkdir -p dist
-          platforms=(
-            "linux/amd64"
-            "linux/arm64"
-            "windows/amd64"
-            "windows/arm64"
-            "darwin/amd64"
-            "darwin/arm64"
-          )
-          for platform in "${platforms[@]}"; do
-            IFS='/' read -r goos goarch <<< "$platform"
-            binary="codecast"
-            ext=""
-            if [ "$goos" = "windows" ]; then
-              ext=".exe"
-            fi
-            echo "Building for $goos/$goarch..."
-            GOOS=$goos GOARCH=$goarch go build -ldflags="-s -w" -o "dist/codecast-${goos}-${goarch}${ext}" .
-          done
-
-      - name: Create archives
-        run: |
-          cd dist
-          for f in codecast-*; do
-            archive="${f%.*}"
-            if [[ "$f" == *.exe ]]; then
-              archive="${f%.exe}"
-            fi
-            if [[ "$f" == *windows* ]]; then
-              zip "${archive}.zip" "$f"
-            else
-              tar czf "${archive}.tar.gz" "$f"
-            fi
-          done
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v5
         with:
-          files: dist/*.{tar.gz,zip}
-          generate_release_notes: true
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}

@@ -1,0 +1,151 @@
+# GoReleaser configuration for CodecastCLI
+# https://goreleaser.com
+
+project_name: codecast
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: codecast
+    main: .
+    binary: codecast
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X codecast/cli/internal/version.Version={{.Version}}
+      - -X codecast/cli/internal/version.GitCommit={{.Commit}}
+      - -X codecast/cli/internal/version.BuildDate={{.Date}}
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}aarch64
+      {{- else }}{{ .Arch }}{{ end }}
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - LICENSE*
+      - README*
+      - CHANGELOG*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+signs:
+  - cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+    artifacts: checksum
+    ids:
+      - default
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+  groups:
+    - title: Features
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 0
+    - title: Bug Fixes
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 1
+    - title: Performance Improvements
+      regexp: "^.*perf[(\\w)]*:+.*$"
+      order: 2
+    - title: Others
+      order: 999
+
+brews:
+  - name: codecast
+    tap:
+      owner: codecast
+      name: homebrew-tap
+      branch: main
+    folder: Formula
+    homepage: "https://github.com/codecast/codecastcli"
+    description: "CodecastCLI - AI-powered coding assistant"
+    license: MIT
+    install: |
+      bin.install "codecast"
+    test: |
+      system "#{bin}/codecast", "--version"
+
+scoops:
+  - name: codecast
+    bucket:
+      owner: codecast
+      name: scoop-bucket
+      branch: main
+    homepage: "https://github.com/codecast/codecastcli"
+    description: "CodecastCLI - AI-powered coding assistant"
+    license: MIT
+
+nfpms:
+  - id: packages
+    package_name: codecast
+    file_name_template: >-
+      {{ .PackageName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}aarch64
+      {{- else }}{{ .Arch }}{{ end }}
+    homepage: "https://github.com/codecast/codecastcli"
+    description: "CodecastCLI - AI-powered coding assistant"
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    maintainer: "Codecast Team"
+    section: utils
+    priority: optional
+    contents:
+      - src: ./codecast
+        dst: /usr/bin/codecast
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+        - changelog-file-missing-in-native-package
+
+release:
+  github:
+    owner: codecast
+    name: codecastcli
+  draft: false
+  prerelease: auto
+  mode: replace

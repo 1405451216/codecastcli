@@ -1,0 +1,26 @@
+name: Winget Publishing
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish to Winget
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Publish to winget-pkgs
+        uses: vedantmgoyal2009/winget-releaser@v2
+        with:
+          identifier: Codecast.Codecast
+          version: ${{ github.event.release.tag_name }}
+          installers-regex: '_windows_x86_64\.zip$'
+          token: ${{ secrets.WINGET_TOKEN }}
+          fork-user: ${{ secrets.WINGET_FORK_USER }}

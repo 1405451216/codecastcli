@@ -1,0 +1,83 @@
+{
+  "name": "codecast-vscode",
+  "displayName": "Codecast AI",
+  "description": "AI-powered coding assistant embedded in VS Code",
+  "version": "0.2.0",
+  "publisher": "codecast",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codecast.start",
+        "title": "Codecast: Start"
+      },
+      {
+        "command": "codecast.sendToCodecast",
+        "title": "Codecast: Send to Codecast"
+      },
+      {
+        "command": "codecast.reviewFile",
+        "title": "Codecast: Review File"
+      },
+      {
+        "command": "codecast.showDiff",
+        "title": "Codecast: Show Diff"
+      },
+      {
+        "command": "codecast.stopAgent",
+        "title": "Codecast: Stop Agent"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "codecast.sendToCodecast",
+          "when": "editorHasSelection",
+          "group": "codecast@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Codecast",
+      "properties": {
+        "codecast.cliPath": {
+          "type": "string",
+          "default": "codecast",
+          "description": "Path to the codecast CLI executable"
+        },
+        "codecast.model": {
+          "type": "string",
+          "default": "",
+          "description": "Default model to use with codecast (leave empty for CLI default)"
+        },
+        "codecast.autoShowDiff": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically show diff view when codecast modifies a file"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build": "node build.js",
+    "package": "node build.js && vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3"
+  }
+}

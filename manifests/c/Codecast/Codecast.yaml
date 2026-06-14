@@ -1,0 +1,37 @@
+PackageIdentifier: Codecast.Codecast
+PackageVersion: "{{version}}"
+PackageName: Codecast CLI
+Publisher: Codecast
+PublisherUrl: https://github.com/codecast
+PublisherSupportUrl: https://github.com/codecast/codecastcli/issues
+Author: Codecast
+ShortDescription: AI-powered terminal coding assistant
+Description: |
+  Codecast CLI is an AI-powered terminal coding assistant that helps you write,
+  review, and refactor code directly from your terminal. It supports multiple
+  AI providers and offers intelligent code suggestions, automated testing, and
+  seamless integration with your development workflow.
+Moniker: codecast
+Tags:
+  - ai
+  - cli
+  - coding
+  - assistant
+  - terminal
+  - codecast
+ReleaseNotesUrl: https://github.com/codecast/codecastcli/releases/tag/v{{version}}
+License: MIT
+LicenseUrl: https://github.com/codecast/codecastcli/blob/main/LICENSE
+PackageUrl: https://github.com/codecast/codecastcli
+InstallerType: zip
+Installers:
+  - Architecture: x64
+    InstallerType: zip
+    InstallerUrl: https://github.com/codecast/codecastcli/releases/download/v{{version}}/codecast_{{version}}_windows_x86_64.zip
+    InstallerSha256: ""
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: codecast.exe
+        PortableCommandAlias: codecast
+ManifestType: singleton
+ManifestVersion: 1.6.0

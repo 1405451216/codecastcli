@@ -1,0 +1,37 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Run E2E tests
+        run: go test ./internal/testutil/ -run TestE2E -count=1 -timeout 60s
+
+      - name: Verify E2E duration
+        run: |
+          start=$(date +%s)
+          go test ./internal/testutil/ -run TestE2E -count=1 -timeout 60s
+          end=$(date +%s)
+          duration=$((end - start))
+          echo "E2E tests completed in ${duration}s"
+          if [ $duration -ge 30 ]; then
+            echo "::warning::E2E tests took ${duration}s, exceeding 30s target"
+          fi
