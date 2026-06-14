@@ -612,11 +612,28 @@ func handleRulesCommand(args string, ag *agent.CodecastAgent) {
 	}
 }
 
-// handleCompactCommand 处理 /compact 命令
+// handleCompactCommand 处理 /compact 命令（Task 1.4: 摘要式压缩）
+// 旧实现直接 ClearContext 丢失关键信息；现改为：
+//   1. 调用 CodecastAgent.SummarizeContext（用 LLM 摘要旧消息）
+//   2. 失败时降级到 ClearContext
 func handleCompactCommand(args string, ag *agent.CodecastAgent) {
-	color.Cyan("正在压缩上下文...")
-	ag.ClearContext()
-	color.Green("✓ 上下文已压缩")
+	if ag == nil {
+		color.Red("Agent 未初始化")
+		return
+	}
+	color.Cyan("正在摘要压缩上下文...")
+
+	// 30 秒超时，避免 LLM 不可用时挂死
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := ag.SummarizeContext(ctx); err != nil {
+		color.Yellow("摘要失败，降级到清空: %v", err)
+		ag.ClearContext()
+		color.Yellow("✓ 上下文已清空（降级）")
+		return
+	}
+	color.Green("✓ 上下文已摘要压缩")
 }
 
 // handlePlanCommand 处理 /plan 命令（DI-7: 真正连接 Orchestrator）

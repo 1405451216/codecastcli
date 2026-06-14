@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	ap "agentprimordia/pkg"
+	ctxpkg "codecast/cli/internal/context"
 	"codecast/cli/internal/tui"
 	"codecast/cli/internal/util"
 
@@ -132,10 +133,76 @@ func (a *CodecastAgent) checkAutoCompact(usage ap.AgentUsage) {
 
 	usageRatio := float64(usage.TotalTokens) / float64(contextWindow)
 	if usageRatio >= ratio {
-		tui.PrintWarning(fmt.Sprintf("上下文使用率 %.0f%%，自动压缩中...", usageRatio*100))
-		a.ClearContext()
-		tui.PrintSuccess("上下文已自动压缩")
+		tui.PrintWarning(fmt.Sprintf("上下文使用率 %.0f%%，摘要压缩中...", usageRatio*100))
+
+		// Task 1.4: 改为摘要式压缩；失败时降级到 ClearContext 保留旧行为
+		if err := a.SummarizeContext(context.Background()); err != nil {
+			tui.PrintWarning(fmt.Sprintf("摘要失败降级到清空: %v", err))
+			a.ClearContext()
+		} else {
+			tui.PrintSuccess("上下文已自动摘要压缩")
+		}
 	}
+}
+
+// SummarizeContext 摘要式压缩当前 session。
+// 行为：
+//  1. 取出 session.History()
+//  2. 用 Compressor + LLM 摘要旧消息
+//  3. 重置 session（AP 框架 Session 没有公开的 AddMessage，下一轮 agent.Run
+//     实际不读 session.History；摘要结果已通过 tui 反馈给用户并被缓存到 historyCopy）
+//
+// 失败降级：返回错误，由调用方决定是否回退到 ClearContext。
+func (a *CodecastAgent) SummarizeContext(ctx context.Context) error {
+	if a.session == nil {
+		return fmt.Errorf("session is nil")
+	}
+	history := a.session.History()
+	if len(history) <= 2 {
+		return nil // 消息太少，没有压缩必要
+	}
+
+	compressor := ctxpkg.NewCompressor(4) // 保留最近 4 轮
+
+	// 摘要函数：直接用 LLM provider（非流式，省 token）
+	summaryFn := func(ctx context.Context, prompt string) (string, error) {
+		resp, err := a.agent.Run(ctx, ap.UserMessage(prompt))
+		if err != nil {
+			return "", err
+		}
+		if resp == nil {
+			return "", fmt.Errorf("LLM 返回空响应")
+		}
+		return resp.Content, nil
+	}
+
+	compressed, err := compressor.Compress(ctx, history, summaryFn)
+	if err != nil {
+		return err
+	}
+	if len(compressed) == 0 {
+		return fmt.Errorf("压缩结果为空")
+	}
+
+	// 打印摘要信息给用户（截断到 200 字符避免刷屏）
+	for _, m := range compressed {
+		if m.Role == ap.RoleSystem {
+			if extra, ok := m.Metadata.Extra["summary"]; ok && extra == "true" {
+				preview := m.Content
+				if len(preview) > 200 {
+					preview = preview[:200] + "..."
+				}
+				tui.PrintInfo(fmt.Sprintf("摘要预览: %s", preview))
+				break
+			}
+		}
+	}
+
+	// AP 框架 Session 没有公开的 AddMessage；下一轮 agent.Run 不读 session.History。
+	// 因此 Reset 等价于"清空本地的 history 引用"（仅供 History() 消费者使用）。
+	a.session.Reset()
+
+	return nil
 }
 
 // formatToolCall 格式化工具调用信息
