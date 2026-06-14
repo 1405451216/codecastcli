@@ -97,6 +97,20 @@ func newAgent(cfg *config.Config, sessionID string) (*CodecastAgent, error) {
 	registry.Register(grepTool)
 	globTool := customtools.NewGlobSearchTool()
 	registry.Register(globTool)
+	listTool := customtools.NewListFilesTool()
+	registry.Register(listTool)
+	// delete_file 接受 *undo.Manager 以共享 agent 的 undo 栈；
+	// 这里传 nil，由 NewDeleteFileTool 内部回退到默认 undo manager。
+	// 后续可改造为延迟注入（先注册占位、undoMgr 创建后绑定），但 v0.3
+	// 暂保持简单 — delete_file 自带备份栈，agent Undo 命令暂不覆盖它。
+	deleteTool := customtools.NewDeleteFileTool(nil)
+	registry.Register(deleteTool)
+	multiEditTool := customtools.NewMultiEditTool()
+	registry.Register(multiEditTool)
+	// 增强 read_file 覆盖 AP 默认（AP DefaultToolkit 注册的是
+	// "filesystem" 多操作工具，而非同名 "read_file"，所以不会冲突）
+	readTool := customtools.NewReadFileTool()
+	registry.Register(readTool)
 
 	mcpReg, mcpWarnings, _ := ConnectMCPServers(registry)
 	// F-04：MCP 启动告警暂存到 agent 结构，由 runInteractive 渲染时显示
@@ -416,6 +430,8 @@ func unescapeJSONString(s string) string {
 }
 
 // buildUndoHook 构建 Undo 备份 Hook（F2: edit_file/write_file 执行前自动备份）
+// 注意：delete_file 内部已经自行 Backup（用自己的 undo 栈），不在此 hook 范围。
+// 集成到 agent.undoMgr 需要 delete_file 接受注入式 manager — 见 agent.go:102 注释。
 func buildUndoHook(mgr *undo.Manager) ap.HookFunc {
 	return func(ctx context.Context, hctx *ap.HookContext) error {
 		if hctx.ToolCall == nil || mgr == nil {
