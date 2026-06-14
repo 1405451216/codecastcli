@@ -21,6 +21,12 @@ import (
 //   - 实现：把 StreamProcess body 拆为 runStreamOnce，外层用 WithRetry 包裹
 //   - A/B 选变体和 StartRound 在 WithRetry **之外**：每轮只算一次（路由决策稳定）
 func (a *CodecastAgent) StreamProcess(ctx context.Context, userInput string) error {
+	// Task 1.6: 标记 "处理中" 给 SIGINT handler。
+	// 入口立刻 Store(true) — 即便后续 F8 预算检查返回 error，handler
+	// 也能正确读到状态。defer 在函数任意返回路径上重置为 false。
+	a.processing.Store(true)
+	defer a.processing.Store(false)
+
 	// F8: 预算检查
 	if a.budgetCtrl != nil {
 		status := a.budgetCtrl.Check()

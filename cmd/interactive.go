@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -70,9 +72,95 @@ func activeCommandRegistry() *CommandRegistry {
 // 全局 Agent 引用，供 executor 和 completer 使用
 var codecastAgent *agent.CodecastAgent
 
+// Task 1.6: Ctrl+C 中断当前请求支持。
+//
+// 设计要点：
+//  1. 当前请求的可取消 cancel 用包级变量持有（processingCancel），
+//     SIGINT handler 通过它取消正在运行的 StreamProcess。
+//  2. executor / runBufioREPL 在调 StreamProcess 前，
+//     创建一个新 ctx 并把它的 cancel 存到 processingCancel。
+//  3. StreamProcess 退出时（成功 / 失败 / 被取消），
+//     defer cancel() 会执行；下一次 REPL 循环会重建 ctx。
+//  4. processingMu 保护 processingCancel 的读写：
+//     - 写：REPL 主循环（创建新 ctx）
+//     - 读：SIGINT handler goroutine
+//     临界区很短（仅做指针赋值），mutex 开销可接受。
+//
+// 为什么不用 atomic.Pointer：atomic.Pointer 写需要 *context.CancelFunc 类型，
+// context.CancelFunc 本身是 interface 转换，atomic 不支持任意 interface。
+// 用 mutex + 指针更直接。
+var (
+	processingCancel context.CancelFunc = func() {}
+	processingMu     sync.Mutex
+)
+
+// acquireProcessingCtx 创建一个可取消的 ctx 并把它注册为
+// "当前正在处理的 ctx"，供 SIGINT handler 通过 processingCancel 取消。
+// 调用方必须在 StreamProcess 结束后调用返回的 cancel（建议用 defer）。
+//
+// 关键：每次处理用户输入都应调用本函数，handler 才能精确取消
+// 正在运行的那次请求；如果只在启动时创建一次 ctx，第一次 cancel
+// 之后再创建的新 ctx 仍能跑。
+func acquireProcessingCtx() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	processingMu.Lock()
+	processingCancel = cancel
+	processingMu.Unlock()
+
+	return ctx, cancel
+}
+
+// setupSignalHandler 安装 SIGINT handler（Task 1.6）。
+//
+// 行为：
+//   - 处理中按 Ctrl+C：调用 processingCancel() 取消当前 ctx；
+//     StreamProcess 看到 ctx.Done() 后返回错误，REPL 重新等待输入。
+//   - 空闲时按 Ctrl+C：go-prompt 自带 handleSignals 已经会处理
+//     （见 c-bata/go-prompt signal_posix.go:30），不需要我们干预。
+//
+// 边界：
+//   - handler 内部只用 codecastAgent.IsProcessing() 与 processingCancel，
+//     不调任何会阻塞的函数（避免在 signal handler 中死锁）。
+//   - 不调 os.Exit — 让 go-prompt / runBufioREPL 自然清理（defer codecastAgent.Close）。
+func setupSignalHandler() {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+
+	go func() {
+		for range sigCh {
+			// 取当前 cancel（短临界区，handler 内不阻塞）
+			processingMu.Lock()
+			cancel := processingCancel
+			processingMu.Unlock()
+
+			if codecastAgent != nil && codecastAgent.IsProcessing() {
+				// 正在处理 → 取消当前 ctx
+				// 注意：defer cancel() 在 StreamProcess 退出时会被执行一次，
+				// 这里再调一次是 no-op（context.CancelFunc 重复调用安全）。
+				cancel()
+				fmt.Println("\n⚠ 已中断当前请求")
+			}
+			// 空闲 → 不做任何事。go-prompt 的内置 handleSignals goroutine
+			// 在 executor 返回后会重新监听 SIGINT，触发 exitCh → os.Exit(0)。
+			// 唯一边界：bufio 路径下用户连续按 Ctrl+C — 我们这里消费了一次
+			// 信号，go-prompt 不会消费；但 bufio 路径在 reader.ReadString('\n')
+			// 阻塞时收到的 SIGINT 会让 read 返回 EINTR 错误，我们在 runBufioREPL
+			// 看到 read error 后会自然 break。两条路径都能"退出"。
+		}
+	}()
+}
+
 // runInteractive 启动交互式 REPL。F-10：返回 error 而非 os.Exit，
 // 由 cmd/root.go 统一处理退出码。
 func runInteractive() error {
+	// Task 1.6: 安装 SIGINT handler。
+	// 注意 go-prompt 在 executor 回调期间会 stop 自己的 handleSignals goroutine
+	// （见 c-bata/go-prompt prompt.go:79），所以 executor 期间 SIGINT
+	// 不会让 go-prompt 主动 os.Exit — 我们的 signal.Notify 是唯一活跃 listener。
+	// executor 返回后 go-prompt 重新启动 handleSignals，此时 SIGINT 走
+	// go-prompt 自带逻辑 → exitCh → os.Exit(0)，即"空闲时按 Ctrl+C 退出"。
+	setupSignalHandler()
 	cfg := config.Load()
 
 	// 从 viper 读取权限相关配置
@@ -240,7 +328,6 @@ func runGoPromptREPL() (err error) {
 // runBufioREPL 回退到 bufio.NewReader 的基础 REPL
 func runBufioREPL() {
 	reader := bufio.NewReader(os.Stdin)
-	ctx := context.Background()
 	running := true
 
 	for running {
@@ -267,11 +354,13 @@ func runBufioREPL() {
 			continue
 		}
 
-		// 发送给 Agent 处理（使用流式输出）
+		// Task 1.6: 每次处理创建新 ctx，让 SIGINT 能精确取消当前请求
+		ctx, cancel := acquireProcessingCtx()
 		if err := codecastAgent.StreamProcess(ctx, input); err != nil {
 			color.Red("处理失败: %v", err)
 			color.Yellow("💡 如果持续失败，请尝试: 1) /model 切换模型 2) 检查网络连接 3) /clear 清除上下文后重试")
 		}
+		cancel() // StreamProcess 内部可能已 defer cancel()，这里再调一次是 no-op
 	}
 }
 
@@ -294,10 +383,11 @@ func executor(input string) {
 		return
 	}
 
-	// 发送给 Agent 处理（使用流式输出）
+	// Task 1.6: 每次处理创建新 ctx，让 SIGINT 能精确取消当前请求
 	// F-03：go-prompt 在 executor 回调期间处于 cooked mode，
 	// permission.ConfirmPrompt 可直接读 stdin 而不会与 prompt 抢。
-	ctx := context.Background()
+	ctx, cancel := acquireProcessingCtx()
+	defer cancel()
 	if err := codecastAgent.StreamProcess(ctx, input); err != nil {
 		color.Red("处理失败: %v", err)
 		color.Yellow("💡 如果持续失败，请尝试: 1) /model 切换模型 2) 检查网络连接 3) /clear 清除上下文后重试")

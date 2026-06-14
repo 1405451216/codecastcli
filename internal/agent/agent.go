@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 
 	ap "agentprimordia/pkg"
 	"codecast/cli/internal/budget"
@@ -68,6 +69,11 @@ type CodecastAgent struct {
 	currentVariant string
 	// routerPrompt 路由决策器（懒初始化：首次 SelectRouted 策略时构造）。
 	routerPrompt *RouterCache
+
+	// processing 标记 StreamProcess / Process 是否正在执行。
+	// 由 SIGINT handler 读取，用于决定 Ctrl+C 是取消当前请求还是退出 REPL。
+	// 零值为 false，安全。
+	processing atomic.Bool
 }
 
 // newAgent 内部工厂函数
@@ -454,6 +460,17 @@ func (a *CodecastAgent) GetSessionID() string {
 	return a.sessionID
 }
 
+// IsProcessing 返回当前是否有请求在处理中（StreamProcess / Process / ProcessWithResult）。
+// 由 SIGINT handler 读取，用于决定 Ctrl+C 是取消当前请求还是退出 REPL。
+//
+// 实现说明：使用 atomic.Bool 而非 mutex，因为：
+//  1. 只做 Store/Load 单字段操作，atomic 已足够
+//  2. SIGINT handler 是高频读路径，atomic.Load 比 mutex.RLock 便宜
+//  3. 状态对一致性要求低 — 错过一次 "in-flight" 判定只会让用户多按一次 Ctrl+C
+func (a *CodecastAgent) IsProcessing() bool {
+	return a.processing.Load()
+}
+
 // PermMgr 返回权限管理器
 func (a *CodecastAgent) PermMgr() *permission.Manager {
 	return a.permMgr
@@ -605,6 +622,10 @@ func (a *CodecastAgent) SwitchModel(modelID string) error {
 
 // Process 处理用户输入
 func (a *CodecastAgent) Process(ctx context.Context, userInput string) error {
+	// Task 1.6: 与 StreamProcess 保持一致，标记 processing 让 SIGINT 可取消
+	a.processing.Store(true)
+	defer a.processing.Store(false)
+
 	a.selectVariantForInput(userInput, false)
 	if a.ab != nil {
 		a.ab.StartRound(a.currentVariant)
@@ -634,6 +655,10 @@ func (a *CodecastAgent) Process(ctx context.Context, userInput string) error {
 
 // ProcessWithResult 处理用户输入并返回结构化结果
 func (a *CodecastAgent) ProcessWithResult(ctx context.Context, userInput string) (*ProcessResult, error) {
+	// Task 1.6: 与 StreamProcess / Process 保持一致
+	a.processing.Store(true)
+	defer a.processing.Store(false)
+
 	a.selectVariantForInput(userInput, false)
 	if a.ab != nil {
 		a.ab.StartRound(a.currentVariant)
