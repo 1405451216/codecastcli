@@ -146,6 +146,9 @@ func globRecursive(root, pattern string) ([]string, error) {
 
 	var results []string
 
+	// 加载 .gitignore 过滤（若不存在则静默忽略）
+	gitFilter, _ := NewGitignoreFilter(root)
+
 	// 遍历所有子目录
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -157,7 +160,20 @@ func globRecursive(root, pattern string) ([]string, error) {
 			if skipDirs[d.Name()] {
 				return filepath.SkipDir
 			}
+			// .gitignore 感知：检查目录是否被忽略
+			if gitFilter != nil {
+				if rel, relErr := filepath.Rel(root, path); relErr == nil && gitFilter.ShouldSkipDir(rel) {
+					return filepath.SkipDir
+				}
+			}
 			return nil
+		}
+
+		// .gitignore 感知：检查文件是否被忽略
+		if gitFilter != nil {
+			if rel, relErr := filepath.Rel(root, path); relErr == nil && gitFilter.ShouldSkip(rel) {
+				return nil
+			}
 		}
 
 		// 获取相对路径
@@ -167,22 +183,32 @@ func globRecursive(root, pattern string) ([]string, error) {
 		}
 
 		// 检查后缀匹配
+		// 修复 globRecursive bug：**/*.ext 的 suffix 是 "/*.ext"，
+		// 用 filepath.Match("/*.go", "main.go") 会失败（* 不匹配 /）。
+		// 解决方案：当 suffix 以 / 开头时，用 path.Match（POSIX 风格，* 不跨 /）
+		// 匹配去掉前导 / 的 suffix；suffix 不含 / 时直接用 filepath.Base 匹配。
 		if suffix != "" {
-			matched, matchErr := filepath.Match(suffix, filepath.Base(rel))
-			if matchErr != nil || !matched {
-				// 也尝试匹配完整后缀路径
-				baseMatched := false
-				if strings.Contains(suffix, string(filepath.Separator)) {
-					// 后缀包含路径分隔符，匹配路径尾部
-					suffixPattern := strings.ReplaceAll(suffix, string(filepath.Separator), "/")
-					relNorm := strings.ReplaceAll(rel, string(filepath.Separator), "/")
-					if strings.HasSuffix(relNorm, suffixPattern) {
-						baseMatched = true
+			matched := false
+			if strings.HasPrefix(suffix, string(filepath.Separator)) || strings.HasPrefix(suffix, "/") {
+				// suffix 是路径模式（**/*.go → "/*.go"），用完整相对路径匹配
+				// 去掉前导分隔符得到 "*.go"，path.Match 在 POSIX 风格下 * 不跨 /
+				cleanSuffix := strings.TrimLeft(suffix, "/\\")
+				matched, _ = filepath.Match(cleanSuffix, filepath.Base(rel))
+				// 也尝试匹配子目录中的同名文件（如 src/auth/main.go）
+				if !matched {
+					// 用 HasSuffix 兜底处理深层路径
+					relNoSlash := strings.ReplaceAll(rel, string(filepath.Separator), "/")
+					suffixNoSlash := strings.ReplaceAll(cleanSuffix, "*", "")
+					if strings.HasSuffix(relNoSlash, suffixNoSlash) {
+						matched = true
 					}
 				}
-				if !baseMatched {
-					return nil
-				}
+			} else {
+				// suffix 是纯文件名模式（如 *.go），直接匹配 basename
+				matched, _ = filepath.Match(suffix, filepath.Base(rel))
+			}
+			if !matched {
+				return nil
 			}
 		}
 
