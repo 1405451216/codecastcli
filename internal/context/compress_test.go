@@ -16,6 +16,16 @@ func TestNewTokenBudget(t *testing.T) {
 	if tb.Used != 0 {
 		t.Errorf("Used = %d, want 0", tb.Used)
 	}
+	// New budget allocation fields
+	if tb.MaxTokens != int(float64(128000)*0.6) {
+		t.Errorf("MaxTokens = %d, want %d", tb.MaxTokens, int(float64(128000)*0.6))
+	}
+	if tb.ReserveSystem != 2000 {
+		t.Errorf("ReserveSystem = %d, want 2000", tb.ReserveSystem)
+	}
+	if tb.ReserveReply != 2000 {
+		t.Errorf("ReserveReply = %d, want 2000", tb.ReserveReply)
+	}
 }
 
 func TestNewTokenBudget_UnknownModel(t *testing.T) {
@@ -39,28 +49,30 @@ func TestNewTokenBudget_PrefixMatch(t *testing.T) {
 	}
 }
 
-func TestTokenBudget_Available(t *testing.T) {
+func TestTokenBudget_AvailableTokens(t *testing.T) {
 	tb := &TokenBudget{
-		ContextWindow: 100000,
-		SystemPrompt:  5000,
-		Reserved:      25000,
+		MaxTokens:     76800,
+		ReserveSystem: 2000,
+		ReserveReply:  2000,
+		Available:     72800,
 		Used:          10000,
 	}
-	want := 100000 - 5000 - 25000 - 10000 // 60000
-	if got := tb.Available(); got != want {
-		t.Errorf("Available() = %d, want %d", got, want)
+	want := 72800 - 10000 // 62800
+	if got := tb.AvailableTokens(); got != want {
+		t.Errorf("AvailableTokens() = %d, want %d", got, want)
 	}
 }
 
-func TestTokenBudget_Available_Negative(t *testing.T) {
+func TestTokenBudget_AvailableTokens_Negative(t *testing.T) {
 	tb := &TokenBudget{
-		ContextWindow: 10000,
-		SystemPrompt:  5000,
-		Reserved:      3000,
-		Used:          5000,
+		MaxTokens:     76800,
+		ReserveSystem: 2000,
+		ReserveReply:  2000,
+		Available:     72800,
+		Used:          80000,
 	}
-	if got := tb.Available(); got != 0 {
-		t.Errorf("Available() = %d, want 0 (clamped from negative)", got)
+	if got := tb.AvailableTokens(); got != 0 {
+		t.Errorf("AvailableTokens() = %d, want 0 (clamped from negative)", got)
 	}
 }
 

@@ -79,7 +79,7 @@ func RegisterBuiltinCommands(r *CommandRegistry) {
 	})
 	r.Register(&CommandEntry{
 		Name: "rules",
-		Description: "查看/重载项目规则",
+		Description: "查看/初始化/重载项目规则 (show/init/reload)",
 		Handler: func(args string, ag *agent.CodecastAgent) bool {
 			handleRulesCommand(args, ag)
 			return true
@@ -110,6 +110,14 @@ func RegisterBuiltinCommands(r *CommandRegistry) {
 		Description: "查看代码库索引",
 		Handler: func(args string, ag *agent.CodecastAgent) bool {
 			handleIndexCommand(args, ag)
+			return true
+		},
+	})
+	r.Register(&CommandEntry{
+		Name: "files",
+		Description: "列出匹配 glob 模式的文件 (使用 /files [pattern])",
+		Handler: func(args string, ag *agent.CodecastAgent) bool {
+			handleFilesCommand(args, ag)
 			return true
 		},
 	})
@@ -156,7 +164,7 @@ func RegisterBuiltinCommands(r *CommandRegistry) {
 	})
 	r.Register(&CommandEntry{
 		Name: "delegate",
-		Description: "规划并执行任务 (双Agent协作)",
+		Description: "规划并执行任务 (双Agent协作, -v 可视化)",
 		Handler: func(args string, ag *agent.CodecastAgent) bool {
 			handleDelegateCommand(args, ag)
 			return true
@@ -303,6 +311,40 @@ func RegisterBuiltinCommands(r *CommandRegistry) {
 			return true
 		},
 	})
+	// === Git 集成命令 ===
+	r.Register(&CommandEntry{
+		Name:        "review",
+		Description: "AI 审查代码变更 (使用 /review [branch] [--json] [--pr])",
+		Handler: func(args string, ag *agent.CodecastAgent) bool {
+			handleReviewCommand(args, ag)
+			return true
+		},
+	})
+	r.Register(&CommandEntry{
+		Name:        "blame",
+		Description: "查看文件 Git Blame 信息 (使用 /blame <file> [line])",
+		Handler: func(args string, ag *agent.CodecastAgent) bool {
+			handleBlameCommand(args, ag)
+			return true
+		},
+	})
+	r.Register(&CommandEntry{
+		Name:        "history",
+		Description: "查看文件修改历史 (使用 /history <file>)",
+		Handler: func(args string, ag *agent.CodecastAgent) bool {
+			handleHistoryCommand(args, ag)
+			return true
+		},
+	})
+	r.Register(&CommandEntry{
+		Name:        "diff",
+		Description: "查看当前代码变更 (使用 /diff [branch])",
+		Handler: func(args string, ag *agent.CodecastAgent) bool {
+			handleDiffCommand(args, ag)
+			return true
+		},
+	})
+
 	r.Register(&CommandEntry{
 		Name:        "ab",
 		Description: "A/B 自动收敛管理 (enable/disable/reset/suggest/apply/epsilon)",
@@ -317,6 +359,14 @@ func RegisterBuiltinCommands(r *CommandRegistry) {
 		Description: "A/B 反馈 (y=上一轮有效 / n=上一轮有问题 / show)",
 		Handler: func(args string, ag *agent.CodecastAgent) bool {
 			handleFbCommand(args, ag)
+			return true
+		},
+	})
+	r.Register(&CommandEntry{
+		Name:        "route",
+		Description: "智能模型路由管理 (on/off/test)",
+		Handler: func(args string, ag *agent.CodecastAgent) bool {
+			handleRouteCommand(args, ag)
 			return true
 		},
 	})

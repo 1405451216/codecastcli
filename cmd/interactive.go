@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,6 +17,7 @@ import (
 	ap "agentprimordia/pkg"
 	"codecast/cli/internal/agent"
 	"codecast/cli/internal/config"
+	"codecast/cli/internal/git"
 	"codecast/cli/internal/hooks"
 	"codecast/cli/internal/indexer"
 	"codecast/cli/internal/model"
@@ -71,6 +73,9 @@ func activeCommandRegistry() *CommandRegistry {
 
 // 全局 Agent 引用，供 executor 和 completer 使用
 var codecastAgent *agent.CodecastAgent
+
+// 全局 FileCompleter，供 @file 补全和展开使用
+var fileCompleter *tui.FileCompleter
 
 // Task 1.6: Ctrl+C 中断当前请求支持。
 //
@@ -264,12 +269,28 @@ func runInteractive() error {
 	color.White("  Model:    %s", cfg.Model)
 	color.White("  Session:  %s", codecastAgent.GetSessionID())
 
+	// 初始化 FileCompleter（使用当前工作目录作为根目录）
+	workDir, _ := os.Getwd()
+	fileCompleter = tui.NewFileCompleter(workDir)
+	// 如果 Agent 有索引器，关联到 FileCompleter 以加速搜索
+	if idx := codecastAgent.GetIndexer(); idx != nil {
+		fileCompleter.SetIndexer(idx)
+	}
+
 	// 显示权限模式
 	permMgr := codecastAgent.PermMgr()
 	if permMgr != nil {
 		color.White("  权限模式: %s", permMgr.ModeName())
 		if cfg.SafeMode {
 			color.Yellow("  安全模式: 已启用（Shell/Web 已禁用）")
+		}
+
+		// 启动 HITL 中断处理 goroutine。
+		// 当 AP 框架的 HITLManager 触发 OnInterrupt 时，
+		// 请求会存入 HITLManagerWrapper.pending，
+		// 此 goroutine 检测到后渲染确认提示并发回用户响应。
+		if hitlMgr := permMgr.HitlManager(); hitlMgr != nil {
+			go hitlInterruptWatcher(hitlMgr, permMgr)
 		}
 	}
 
@@ -345,6 +366,20 @@ func runBufioREPL() {
 			continue
 		}
 
+		// 多行输入支持：以反斜杠结尾时继续读取下一行
+		for strings.HasSuffix(input, "\\") {
+			input = input[:len(input)-1] // 去掉末尾反斜杠
+			fmt.Print(color.CyanString("… "))
+			nextLine, err := reader.ReadString('\n')
+			if err != nil {
+				if err.Error() != "EOF" {
+					color.Red("读取输入错误: %v", err)
+				}
+				break
+			}
+			input += "\n" + strings.TrimSpace(nextLine)
+		}
+
 		// 处理特殊命令
 		if handleSpecialCommand(input, codecastAgent, &running) {
 			// v0.2.0: 与 go-prompt 路径保持一致，退出时设置 quitFlag
@@ -354,9 +389,12 @@ func runBufioREPL() {
 			continue
 		}
 
+		// 展开 @file 引用
+		expanded := expandFileReferences(input)
+
 		// Task 1.6: 每次处理创建新 ctx，让 SIGINT 能精确取消当前请求
 		ctx, cancel := acquireProcessingCtx()
-		if err := codecastAgent.StreamProcess(ctx, input); err != nil {
+		if err := codecastAgent.StreamProcess(ctx, expanded); err != nil {
 			color.Red("处理失败: %v", err)
 			color.Yellow("💡 如果持续失败，请尝试: 1) /model 切换模型 2) 检查网络连接 3) /clear 清除上下文后重试")
 		}
@@ -371,7 +409,7 @@ func executor(input string) {
 		return
 	}
 
-	// 保存历史记录
+	// 保存历史记录（保存原始输入，不含文件展开内容）
 	appendHistory(input)
 
 	running := true
@@ -383,12 +421,15 @@ func executor(input string) {
 		return
 	}
 
+	// 展开 @file 引用
+	expanded := expandFileReferences(input)
+
 	// Task 1.6: 每次处理创建新 ctx，让 SIGINT 能精确取消当前请求
 	// F-03：go-prompt 在 executor 回调期间处于 cooked mode，
 	// permission.ConfirmPrompt 可直接读 stdin 而不会与 prompt 抢。
 	ctx, cancel := acquireProcessingCtx()
 	defer cancel()
-	if err := codecastAgent.StreamProcess(ctx, input); err != nil {
+	if err := codecastAgent.StreamProcess(ctx, expanded); err != nil {
 		color.Red("处理失败: %v", err)
 		color.Yellow("💡 如果持续失败，请尝试: 1) /model 切换模型 2) 检查网络连接 3) /clear 清除上下文后重试")
 	}
@@ -406,7 +447,45 @@ func completer(d prompt.Document) []prompt.Suggest {
 		return prompt.FilterHasPrefix(commandSuggestions, text, true)
 	}
 
+	// @file 路径补全：当输入包含 @ 时，提供文件路径建议
+	if strings.Contains(text, "@") {
+		return fileRefCompleter(text)
+	}
+
 	return nil
+}
+
+// fileRefCompleter 为 @path 提供文件路径补全建议
+func fileRefCompleter(text string) []prompt.Suggest {
+	// 找到最后一个 @ 的位置
+	lastAt := strings.LastIndex(text, "@")
+	if lastAt < 0 {
+		return nil
+	}
+
+	// 提取 @ 后面的路径前缀
+	prefix := text[lastAt+1:]
+
+	// 使用 FileCompleter 搜索匹配的文件
+	if fileCompleter == nil {
+		return nil
+	}
+
+	matches := fileCompleter.Complete(prefix)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	suggestions := make([]prompt.Suggest, 0, len(matches))
+	for _, m := range matches {
+		// 构建补全文本：保留 @ 前的内容 + @ + 匹配的路径
+		suggestions = append(suggestions, prompt.Suggest{
+			Text:        text[:lastAt+1] + m,
+			Description: filepath.Ext(m),
+		})
+	}
+
+	return suggestions
 }
 
 // getHistoryFilePath 返回历史记录文件路径
@@ -644,6 +723,182 @@ func truncateRunes(s string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "..."
 }
 
+// fileRefRe matches @path/to/file references in user input.
+// The path must start with a non-whitespace, non-/, non-@ character after @.
+var fileRefRe = regexp.MustCompile(`@([^\s/@][^\s]*)`)
+
+// expandFileReferences expands @path/to/file references in user input
+// by reading the file content and injecting it into the message.
+// Uses FileCompleter.ExpandFileReferences when available for better
+// language detection, truncation, and missing file handling.
+func expandFileReferences(input string) string {
+	if fileCompleter != nil {
+		return fileCompleter.ExpandFileReferences(input)
+	}
+	// Fallback: inline regex replacement when FileCompleter is not initialized
+	return fileRefRe.ReplaceAllStringFunc(input, func(match string) string {
+		path := match[1:] // Remove @ prefix
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return match
+		}
+		ext := filepath.Ext(path)
+		lang := detectLanguageFromExt(ext)
+		truncated := truncateContent(string(content), 4000)
+		return fmt.Sprintf("\n```%s\n// File: %s\n%s\n```\n", lang, path, truncated)
+	})
+}
+
+// detectLanguageFromExt maps file extensions to code fence language identifiers.
+func detectLanguageFromExt(ext string) string {
+	switch ext {
+	case ".go":
+		return "go"
+	case ".py":
+		return "python"
+	case ".ts":
+		return "typescript"
+	case ".tsx":
+		return "tsx"
+	case ".js":
+		return "javascript"
+	case ".jsx":
+		return "jsx"
+	case ".rs":
+		return "rust"
+	case ".java":
+		return "java"
+	case ".md":
+		return "markdown"
+	case ".yaml", ".yml":
+		return "yaml"
+	case ".json":
+		return "json"
+	case ".toml":
+		return "toml"
+	case ".sql":
+		return "sql"
+	case ".sh":
+		return "bash"
+	case ".c":
+		return "c"
+	case ".cpp", ".cc", ".cxx":
+		return "cpp"
+	case ".h":
+		return "c"
+	case ".hpp":
+		return "cpp"
+	case ".rb":
+		return "ruby"
+	case ".php":
+		return "php"
+	case ".swift":
+		return "swift"
+	case ".kt":
+		return "kotlin"
+	case ".scala":
+		return "scala"
+	case ".r":
+		return "r"
+	case ".lua":
+		return "lua"
+	case ".html":
+		return "html"
+	case ".css":
+		return "css"
+	case ".scss":
+		return "scss"
+	case ".xml":
+		return "xml"
+	case ".proto":
+		return "protobuf"
+	case ".dockerfile":
+		return "dockerfile"
+	case ".makefile":
+		return "makefile"
+	default:
+		return ""
+	}
+}
+
+// truncateContent truncates content to maxChars bytes, appending a notice if truncated.
+func truncateContent(content string, maxChars int) string {
+	if len(content) <= maxChars {
+		return content
+	}
+	return content[:maxChars] + "\n... (truncated, file too large)"
+}
+
+// handleFilesCommand 处理 /files 命令，列出匹配 glob 模式的文件
+func handleFilesCommand(args string, ag *agent.CodecastAgent) {
+	pattern := strings.TrimSpace(args)
+	if pattern == "" {
+		pattern = "*"
+	}
+
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		color.Red("无效的 glob 模式: %v", err)
+		return
+	}
+
+	if len(matches) == 0 {
+		color.Yellow("没有匹配 %s 的文件", pattern)
+		color.White("提示: 使用 @<path> 在消息中引用文件内容")
+		return
+	}
+
+	color.Cyan("匹配 %s 的文件 (%d):", pattern, len(matches))
+	for _, m := range matches {
+		info, err := os.Stat(m)
+		if err != nil {
+			continue
+		}
+		if info.IsDir() {
+			color.White("  📁 %s/", m)
+		} else {
+			color.White("  📄 %s (%s)", m, humanizeBytes(int(info.Size())))
+		}
+	}
+	color.HiBlack("提示: 使用 @<path> 在消息中引用文件内容")
+}
+
+// hitlInterruptWatcher 监控 HITL 中断请求并在终端渲染确认提示。
+//
+// 工作流程：
+//  1. AP 框架的 HITLManager 在工具执行前调用 OnInterrupt 回调
+//  2. OnInterrupt 将 InterruptRequest 存入 HITLManagerWrapper.pending
+//  3. 本 watcher 检测到 pending 请求后，调用 HandleInterrupt 渲染确认提示
+//  4. 用户输入后，通过 SendResponse 将 HumanResponse 发回 HITL 通道
+//  5. AP 框架的 RequestInterrupt 从通道读取响应，继续或中止工具执行
+//
+// 注意：当前 buildPermHook 已在 HookBeforeTool 阶段同步处理确认，
+// 所以 HITL 通道路径主要在 AP 框架直接使用 WithHITL 注入时激活。
+// 两条路径不会同时触发（Hook 先执行，如果 Hook 拒绝则工具不会到达 executor）。
+func hitlInterruptWatcher(hitlMgr *permission.HITLManagerWrapper, permMgr *permission.Manager) {
+	// 轮询间隔：100ms 足够快（用户感知 < 200ms），CPU 开销可忽略
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		req := hitlMgr.PendingRequest()
+		if req == nil {
+			continue
+		}
+
+		// 有挂起的中断请求，处理它
+		resp, alwaysAllowed := permission.HandleInterrupt(permMgr, req)
+
+		// 如果用户选择 always-allow，更新权限管理器
+		if alwaysAllowed {
+			// HandleInterrupt 内部已调用 AddAutoAllow
+		}
+
+		// 清除 pending 状态
+		hitlMgr.SendResponse(resp)
+	}
+}
+
 // handleModeCommand 处理 /mode 命令，切换权限模式
 func handleModeCommand(args string, ag *agent.CodecastAgent) {
 	mode := strings.TrimSpace(args)
@@ -679,7 +934,7 @@ func handleModeCommand(args string, ag *agent.CodecastAgent) {
 func handleRulesCommand(args string, ag *agent.CodecastAgent) {
 	switch strings.TrimSpace(args) {
 	case "", "show":
-		// 显示当前规则
+		// 显示当前规则（含文件来源和大小）
 		loader := rules.NewLoader(".")
 		rs, err := loader.Load()
 		if err != nil {
@@ -688,18 +943,71 @@ func handleRulesCommand(args string, ag *agent.CodecastAgent) {
 		}
 		if rs.Merged == "" {
 			color.Yellow("未找到项目规则")
-			color.White("使用 codecast init 初始化项目配置")
+			color.White("使用 /rules init 初始化项目配置")
 			return
 		}
-		color.Cyan("当前项目规则:")
+		color.Cyan("已加载的规则:")
+		// 显示各来源文件信息
+		homeDir, _ := os.UserHomeDir()
+		showRuleSource(filepath.Join(homeDir, ".codecast", "rules.md"), "全局", rs.Global)
+		showRuleSource(".codecast/rules.md", "项目", rs.Project)
+		showRuleSource(".codecast/rules.local.md", "本地", rs.Local)
+		for _, sm := range rs.SubModules {
+			showRuleSource(filepath.Join(".codecast", "rules", sm.Filename), "子模块", sm.Content)
+		}
+		totalSize := len(rs.Global) + len(rs.Project) + len(rs.Local)
+		for _, sm := range rs.SubModules {
+			totalSize += len(sm.Content)
+		}
+		sources := 0
+		if rs.Global != "" {
+			sources++
+		}
+		if rs.Project != "" {
+			sources++
+		}
+		if rs.Local != "" {
+			sources++
+		}
+		sources += len(rs.SubModules)
+		color.HiBlack("总大小: %s | 来源: %d 个文件", humanizeBytes(totalSize), sources)
+		fmt.Println("─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─")
 		fmt.Println(rs.Merged)
+	case "init":
+		// 在交互模式内初始化项目规则
+		if err := rules.InitProject("."); err != nil {
+			if strings.Contains(err.Error(), "已存在") {
+				color.Yellow("项目规则已存在: %v", err)
+			} else {
+				color.Red("初始化失败: %v", err)
+			}
+			return
+		}
+		color.Green("✓ 已创建 .codecast/rules.md 模板文件")
+		color.White("  请根据项目需求编辑此文件。")
 	case "reload":
 		// 重新加载规则
 		color.Yellow("规则将在下次对话时自动重新加载")
 	default:
 		color.Yellow("未知子命令: %s", args)
-		color.White("可用: /rules [show|reload]")
+		color.White("可用: /rules [show|init|reload]")
 	}
+}
+
+// showRuleSource 显示规则文件来源信息
+func showRuleSource(path, level, content string) {
+	if content == "" {
+		return
+	}
+	color.Green("  ✓ %s (%s, %s)", path, level, humanizeBytes(len(content)))
+}
+
+// humanizeBytes 将字节数转为人类可读格式
+func humanizeBytes(n int) string {
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	return fmt.Sprintf("%.1f KB", float64(n)/1024)
 }
 
 // handleCompactCommand 处理 /compact 命令（Task 1.4: 摘要式压缩）
@@ -760,9 +1068,22 @@ func handlePlanCommand(args string, ag *agent.CodecastAgent) {
 }
 
 // handleDelegateCommand 处理 /delegate 命令（DI-7: 真正连接 Orchestrator）
+// 支持 /delegate -v <task> 启用 DAG 可视化
 func handleDelegateCommand(args string, ag *agent.CodecastAgent) {
-	if args == "" {
-		color.Yellow("用法: /delegate <任务描述>")
+	// 解析 -v 标志
+	visualize := false
+	task := args
+	if strings.HasPrefix(args, "-v ") {
+		visualize = true
+		task = strings.TrimSpace(strings.TrimPrefix(args, "-v"))
+	} else if strings.HasPrefix(args, "--visualize ") {
+		visualize = true
+		task = strings.TrimSpace(strings.TrimPrefix(args, "--visualize"))
+	}
+
+	if task == "" {
+		color.Yellow("用法: /delegate [-v] <任务描述>")
+		color.White("  -v, --visualize  显示 DAG 可视化")
 		return
 	}
 	color.Cyan("正在使用 Plan+Execute 双 Agent 协作...")
@@ -773,18 +1094,58 @@ func handleDelegateCommand(args string, ag *agent.CodecastAgent) {
 		color.Red("创建编排器失败: %v", err)
 		color.White("回退到普通模式执行...")
 		ctx := context.Background()
-		if err := ag.StreamProcess(ctx, args); err != nil {
+		if err := ag.StreamProcess(ctx, task); err != nil {
 			color.Red("执行失败: %v", err)
 		}
 		return
 	}
 
+	// 启用 DAG 可视化
+	if visualize {
+		orchestrator.SetVisualization(true)
+	}
+
 	spinner := tui.NewSpinner("规划中...")
 	spinner.Start()
 
+	// 如果启用可视化，在后台 goroutine 中定期渲染 DAGView
+	var renderDone chan struct{}
+	if visualize {
+		renderDone = make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					dv := orchestrator.GetDAGView()
+					if dv != nil {
+						fmt.Print("\r\033[K") // 清除当前行
+						fmt.Println(dv.Render(60))
+					}
+				case <-renderDone:
+					return
+				}
+			}
+		}()
+	}
+
 	ctx := context.Background()
-	result, err := orchestrator.PlanAndExecute(ctx, args)
+	result, err := orchestrator.PlanAndExecute(ctx, task)
 	spinner.Stop()
+
+	// 停止后台渲染
+	if renderDone != nil {
+		close(renderDone)
+	}
+
+	// 渲染最终 DAG 状态
+	if visualize {
+		dv := orchestrator.GetDAGView()
+		if dv != nil {
+			fmt.Println(dv.Render(60))
+		}
+	}
 
 	if err != nil {
 		color.Red("执行失败: %v", err)
@@ -1211,6 +1572,98 @@ func printPluginHelp() {
 	fmt.Println()
 }
 
+// handleRouteCommand 处理 /route 命令 — 智能模型路由管理
+func handleRouteCommand(args string, ag *agent.CodecastAgent) {
+	router := ag.GetRouter()
+	if router == nil {
+		color.Red("路由器未初始化")
+		return
+	}
+
+	args = strings.TrimSpace(args)
+	if args == "" {
+		// 显示当前路由配置和状态
+		cfg := router.Config()
+		status := "禁用"
+		if router.IsEnabled() {
+			status = "启用"
+		}
+		color.Cyan("🔀 智能模型路由:")
+		color.White("  状态:     %s", status)
+		color.White("  简单模型: %s", cfg.SimpleModel)
+		color.White("  中等模型: %s", cfg.MediumModel)
+		color.White("  复杂模型: %s", cfg.ComplexModel)
+		color.White("  当前模型: %s", ag.GetModelSwitcher().CurrentModel())
+		fmt.Println()
+		color.White("用法:")
+		color.White("  /route          显示路由配置和状态")
+		color.White("  /route on       启用智能路由")
+		color.White("  /route off      禁用智能路由")
+		color.White("  /route test <input>  测试输入的路由结果")
+		return
+	}
+
+	fields := strings.Fields(args)
+	sub := fields[0]
+	rest := ""
+	if len(fields) > 1 {
+		rest = strings.TrimSpace(strings.TrimPrefix(args, sub))
+	}
+
+	switch sub {
+	case "on":
+		router.SetEnabled(true)
+		color.Green("✓ 智能路由已启用")
+	case "off":
+		router.SetEnabled(false)
+		color.Yellow("✓ 智能路由已禁用")
+	case "test":
+		if rest == "" {
+			color.Yellow("用法: /route test <input>")
+			return
+		}
+		fileCount := countFileRefsForRoute(rest)
+		routedModel := router.Route(rest, fileCount)
+		currentModel := ag.GetModelSwitcher().CurrentModel()
+		color.Cyan("路由测试结果:")
+		color.White("  输入:     %s", truncateForDisplay(rest, 80))
+		color.White("  文件引用: %d", fileCount)
+		color.White("  当前模型: %s", currentModel)
+		color.White("  路由模型: %s", routedModel)
+		if routedModel != currentModel {
+			color.Green("  → 会切换模型")
+		} else {
+			color.HiBlack("  → 无需切换")
+		}
+	default:
+		color.Yellow("未知子命令: %s", sub)
+		color.White("可用: /route [on|off|test <input>]")
+	}
+}
+
+// countFileRefsForRoute 统计输入中 @file 引用的数量
+func countFileRefsForRoute(input string) int {
+	count := 0
+	inRef := false
+	for i := 0; i < len(input); i++ {
+		if input[i] == '@' && !inRef {
+			inRef = true
+			count++
+		} else if input[i] == ' ' || input[i] == '\t' || input[i] == '\n' {
+			inRef = false
+		}
+	}
+	return count
+}
+
+// truncateForDisplay 截断字符串用于显示
+func truncateForDisplay(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 // handleRagCommand 处理 /rag 斜杠命令
 func handleRagCommand(args string, ag *agent.CodecastAgent) {
 	args = strings.TrimSpace(args)
@@ -1484,5 +1937,313 @@ printAgentStats(stats)
 }
 
 func printResumeHint() {
-color.Cyan("💡 提示: 启动时使用 --resume <id> 或 --continue 恢复会话")
+	color.Cyan("💡 提示: 启动时使用 --resume <id> 或 --continue 恢复会话")
+}
+
+// handleReviewCommand 处理 /review 命令 — AI 审查代码变更（含 blame 注入）
+//
+// 用法:
+//
+//	/review          — 审查 staged+unstaged 变更
+//	/review main     — 审查与 main 分支的差异
+//	/review --json   — 输出 JSON 格式审查结果
+//	/review --pr     — 将审查结果发布为 GitHub PR 评论
+func handleReviewCommand(args string, ag *agent.CodecastAgent) {
+	analyzer := git.NewAnalyzer(".")
+	if !analyzer.IsGitRepo() {
+		color.Red("当前目录不是 Git 仓库")
+		return
+	}
+
+	// Parse flags and branch argument
+	outputJSON := strings.Contains(args, "--json")
+	postPR := strings.Contains(args, "--pr")
+	cleanArgs := strings.ReplaceAll(args, "--json", "")
+	cleanArgs = strings.ReplaceAll(cleanArgs, "--pr", "")
+	branch := strings.TrimSpace(cleanArgs)
+
+	var diff string
+	var err error
+
+	if branch != "" {
+		diff, err = analyzer.GetDiff(branch)
+		if err != nil {
+			color.Red("获取 diff 失败: %v", err)
+			return
+		}
+	} else {
+		// Get staged + unstaged changes
+		staged, sErr := analyzer.StagedDiff()
+		unstaged, uErr := analyzer.UnstagedDiff()
+		if sErr != nil {
+			color.Red("获取 staged diff 失败: %v", sErr)
+			return
+		}
+		if uErr != nil {
+			color.Red("获取 unstaged diff 失败: %v", uErr)
+			return
+		}
+		diff = staged + unstaged
+	}
+
+	if diff == "" {
+		color.Yellow("没有找到变更")
+		return
+	}
+
+	// Collect blame information for each changed file
+	blames := collectBlames(analyzer, diff)
+
+	// Build structured review prompt with blame context
+	prompt := git.FormatReviewPrompt(diff, blames)
+
+	ctx, cancel := acquireProcessingCtx()
+	defer cancel()
+
+	if outputJSON || postPR {
+		// Use ProcessWithResult to capture LLM output for structured parsing
+		result, err := ag.ProcessWithResult(ctx, prompt)
+		if err != nil {
+			color.Red("审查失败: %v", err)
+			return
+		}
+
+		reviewResult := git.ParseReviewOutput(result.Content)
+
+		if outputJSON {
+			jsonStr, err := reviewResult.ToJSON()
+			if err != nil {
+				color.Red("JSON 序列化失败: %v", err)
+				return
+			}
+			fmt.Println(jsonStr)
+		}
+
+		if postPR {
+			owner, repo, prNum, err := git.GetPRInfo(analyzer)
+			if err != nil {
+				color.Yellow("PR 信息获取失败: %v", err)
+				color.White("以文本方式输出审查结果：")
+				printReviewResultText(reviewResult)
+				return
+			}
+			if err := git.PostPRComments(reviewResult.Findings, owner, repo, prNum); err != nil {
+				color.Red("发布 PR 评论失败: %v", err)
+			}
+		}
+
+		// If --json only (no --pr), also print a short summary
+		if outputJSON && !postPR {
+			printReviewSummary(reviewResult)
+		}
+	} else {
+		// Default: stream the review output
+		if err := ag.StreamProcess(ctx, prompt); err != nil {
+			color.Red("审查失败: %v", err)
+		}
+	}
+}
+
+// collectBlames gathers blame summaries for each file in the diff.
+func collectBlames(analyzer *git.Analyzer, diff string) map[string]string {
+	files := git.ExtractChangedFiles(diff)
+	if len(files) == 0 {
+		return nil
+	}
+
+	blames := make(map[string]string, len(files))
+	for _, file := range files {
+		summary := analyzer.BlameSummary(file)
+		blames[file] = summary
+	}
+	return blames
+}
+
+// printReviewResultText prints a ReviewResult as formatted text.
+func printReviewResultText(r *git.ReviewResult) {
+	color.Cyan("📋 审查结果")
+	fmt.Printf("评分: %d/10\n", r.OverallScore)
+	fmt.Printf("摘要: %s\n", r.Summary)
+	if len(r.Findings) > 0 {
+		fmt.Println()
+		for i, f := range r.Findings {
+			loc := f.File
+			if f.Line > 0 {
+				loc = fmt.Sprintf("%s:%d", f.File, f.Line)
+			}
+			sevColor := severityColor(f.Severity)
+			sevColor("  [%d] %s | %s — %s", i+1, f.Severity, f.Category, loc)
+			fmt.Printf("      %s\n", f.Message)
+			if f.Suggestion != "" {
+				fmt.Printf("      💡 %s\n", f.Suggestion)
+			}
+		}
+	}
+}
+
+// printReviewSummary prints a brief summary after JSON output.
+func printReviewSummary(r *git.ReviewResult) {
+	color.Cyan("\n📋 审查摘要")
+	fmt.Printf("  评分: %d/10 | 发现: %d 项\n", r.OverallScore, len(r.Findings))
+	critical := 0
+	for _, f := range r.Findings {
+		if f.Severity == "critical" {
+			critical++
+		}
+	}
+	if critical > 0 {
+		color.Red("  ⚠ %d 个严重问题", critical)
+	}
+}
+
+// severityColor returns a color-print function based on severity level.
+func severityColor(severity string) func(string, ...interface{}) {
+	switch severity {
+	case "critical":
+		return color.Red
+	case "warning":
+		return color.Yellow
+	default:
+		return color.White
+	}
+}
+
+// handleBlameCommand 处理 /blame 命令 — 查看 Git Blame 信息
+func handleBlameCommand(args string, ag *agent.CodecastAgent) {
+	analyzer := git.NewAnalyzer(".")
+	if !analyzer.IsGitRepo() {
+		color.Red("当前目录不是 Git 仓库")
+		return
+	}
+
+	args = strings.TrimSpace(args)
+	if args == "" {
+		color.Yellow("用法: /blame <file> [line]")
+		return
+	}
+
+	// Parse: /blame <file> [line] or /blame <file> [start-end]
+	parts := strings.Fields(args)
+	file := parts[0]
+
+	var output string
+	var err error
+
+	if len(parts) >= 2 {
+		// Parse line range: single line "10" or range "10-20"
+		lineSpec := parts[1]
+		if idx := strings.Index(lineSpec, "-"); idx > 0 {
+			var start, end int
+			if _, err := fmt.Sscanf(lineSpec, "%d-%d", &start, &end); err == nil && start > 0 && end >= start {
+				output, err = analyzer.BlameContext(file, start, end)
+			} else {
+				color.Red("无效的行号范围: %s (格式: start-end)", lineSpec)
+				return
+			}
+		} else {
+			var line int
+			if _, err := fmt.Sscanf(lineSpec, "%d", &line); err == nil && line > 0 {
+				output, err = analyzer.BlameContext(file, line, line)
+			} else {
+				color.Red("无效的行号: %s", lineSpec)
+				return
+			}
+		}
+	} else {
+		output, err = analyzer.BlameFile(file)
+	}
+
+	if err != nil {
+		color.Red("获取 blame 信息失败: %v", err)
+		return
+	}
+
+	if output == "" {
+		color.Yellow("文件 %s 没有 blame 信息", file)
+		return
+	}
+
+	color.Cyan("📝 Git Blame: %s", file)
+	fmt.Println(output)
+}
+
+// handleHistoryCommand 处理 /history 命令 — 查看文件修改历史
+func handleHistoryCommand(args string, ag *agent.CodecastAgent) {
+	analyzer := git.NewAnalyzer(".")
+	if !analyzer.IsGitRepo() {
+		color.Red("当前目录不是 Git 仓库")
+		return
+	}
+
+	file := strings.TrimSpace(args)
+	if file == "" {
+		color.Yellow("用法: /history <file>")
+		return
+	}
+
+	output, err := analyzer.FileHistory(file, 20)
+	if err != nil {
+		color.Red("获取文件历史失败: %v", err)
+		return
+	}
+
+	if output == "" {
+		color.Yellow("文件 %s 没有提交历史", file)
+		return
+	}
+
+	color.Cyan("📜 文件修改历史: %s", file)
+	fmt.Println(output)
+}
+
+// handleDiffCommand 处理 /diff 命令 — 查看当前代码变更
+func handleDiffCommand(args string, ag *agent.CodecastAgent) {
+	analyzer := git.NewAnalyzer(".")
+	if !analyzer.IsGitRepo() {
+		color.Red("当前目录不是 Git 仓库")
+		return
+	}
+
+	branch := strings.TrimSpace(args)
+
+	if branch != "" {
+		output, err := analyzer.GetDiff(branch)
+		if err != nil {
+			color.Red("获取 diff 失败: %v", err)
+			return
+		}
+		if output == "" {
+			color.Yellow("与 %s 分支没有差异", branch)
+			return
+		}
+		color.Cyan("🔀 Diff: %s...HEAD", branch)
+		fmt.Println(output)
+		return
+	}
+
+	// Show staged + unstaged changes
+	staged, sErr := analyzer.StagedDiff()
+	if sErr != nil {
+		color.Red("获取 staged diff 失败: %v", sErr)
+		return
+	}
+	unstaged, uErr := analyzer.UnstagedDiff()
+	if uErr != nil {
+		color.Red("获取 unstaged diff 失败: %v", uErr)
+		return
+	}
+
+	if staged == "" && unstaged == "" {
+		color.Yellow("没有未提交的变更")
+		return
+	}
+
+	if staged != "" {
+		color.Cyan("📋 Staged Changes:")
+		fmt.Println(staged)
+	}
+	if unstaged != "" {
+		color.Cyan("📋 Unstaged Changes:")
+		fmt.Println(unstaged)
+	}
 }

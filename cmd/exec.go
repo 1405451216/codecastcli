@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,10 +19,11 @@ import (
 
 // Exit codes
 const (
-	ExitSuccess     = 0
-	ExitError       = 1
-	ExitInterrupted = 130
-	ExitToolDenied  = 2
+	ExitSuccess       = 0
+	ExitError         = 1
+	ExitTimeout       = 2
+	ExitConfigError   = 3
+	ExitInterrupted   = 130
 )
 
 // ExitCodeError 是 cobra 可以识别的退出错误，返回非 0 退出码。
@@ -53,7 +53,11 @@ func newExit(code int, err error) *ExitCodeError {
 var (
 	execFormat  string
 	execModel   string
-	execTimeout int
+	execTimeout time.Duration
+	execTools   []string
+	execNoTools bool
+	execWorkDir string
+	execQuiet   bool
 )
 
 // execCmd represents the exec command for headless mode
@@ -71,7 +75,12 @@ var execCmd = &cobra.Command{
   codecast exec "解释 main.go 的功能"
   codecast exec --format json "修复 bug"
   cat error.log | codecast exec "分析这个错误"
-  codecast exec --format stream-json "重构代码"`,
+  codecast exec --format stream-json "重构代码"
+  codecast exec --tools read_file,edit_file "修改代码"
+  codecast exec --no-tools "纯对话"
+  codecast exec --work-dir /path/to/project "分析项目"
+  codecast exec --quiet "只看结果"
+  codecast exec --timeout 5m "限时执行"`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runExec,
 }
@@ -80,16 +89,36 @@ func init() {
 	rootCmd.AddCommand(execCmd)
 	execCmd.Flags().StringVarP(&execFormat, "format", "f", "text", "输出格式 (text/json/stream-json)")
 	execCmd.Flags().StringVarP(&execModel, "model", "m", "", "覆盖模型")
-	execCmd.Flags().IntVarP(&execTimeout, "timeout", "t", 300, "超时时间（秒）")
+	execCmd.Flags().DurationVarP(&execTimeout, "timeout", "t", 10*time.Minute, "总超时时间（如 30s, 5m, 1h）")
+	execCmd.Flags().StringSliceVar(&execTools, "tools", nil, "允许的工具列表（逗号分隔）")
+	execCmd.Flags().BoolVar(&execNoTools, "no-tools", false, "禁用所有工具（纯对话模式）")
+	execCmd.Flags().StringVar(&execWorkDir, "work-dir", "", "工作目录（执行前切换到此目录）")
+	execCmd.Flags().BoolVarP(&execQuiet, "quiet", "q", false, "安静模式，仅输出最终结果")
 }
 
 func runExec(cmd *cobra.Command, args []string) error {
 	// 解析输出格式
 	format, err := output.ParseFormat(execFormat)
 	if err != nil {
-		return newExit(ExitError, err)
+		return newExit(ExitConfigError, err)
 	}
 	formatter := output.NewFormatter(format)
+
+	// --no-tools 和 --tools 互斥检查
+	if execNoTools && len(execTools) > 0 {
+		err := fmt.Errorf("--no-tools 和 --tools 不能同时使用")
+		formatter.WriteError(err)
+		return newExit(ExitConfigError, err)
+	}
+
+	// --work-dir: 切换工作目录
+	if execWorkDir != "" {
+		if err := os.Chdir(execWorkDir); err != nil {
+			wrapped := fmt.Errorf("切换工作目录失败: %w", err)
+			formatter.WriteError(wrapped)
+			return newExit(ExitConfigError, wrapped)
+		}
+	}
 
 	// 加载配置
 	cfg := config.Load()
@@ -101,7 +130,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	input, err := readExecInput(args)
 	if err != nil {
 		formatter.WriteError(err)
-		return newExit(ExitError, err)
+		return newExit(ExitConfigError, err)
 	}
 
 	if input == "" {
@@ -109,6 +138,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 		formatter.WriteError(err)
 		return newExit(ExitError, err)
 	}
+
+	// 展开 @file 引用
+	expanded := expandFileReferences(input)
 
 	// 创建 Agent
 	ag, err := agent.New(cfg)
@@ -118,8 +150,34 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 	defer ag.Close()
 
-	// 设置上下文和信号处理
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(execTimeout)*time.Second)
+	// --no-tools: 移除所有工具（纯对话模式）
+	if execNoTools {
+		registry := ag.GetRegistry()
+		if registry != nil {
+			for _, name := range registry.List() {
+				registry.Unregister(name)
+			}
+		}
+	}
+
+	// --tools: 只保留指定工具
+	if len(execTools) > 0 {
+		allowed := make(map[string]bool, len(execTools))
+		for _, t := range execTools {
+			allowed[strings.TrimSpace(t)] = true
+		}
+		registry := ag.GetRegistry()
+		if registry != nil {
+			for _, name := range registry.List() {
+				if !allowed[name] {
+					registry.Unregister(name)
+				}
+			}
+		}
+	}
+
+	// 设置上下文和超时
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
 
 	// 信号处理
@@ -131,7 +189,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}()
 
 	// 执行
-	result, err := ag.ProcessWithResult(ctx, input)
+	result, err := ag.ProcessWithResult(ctx, expanded)
 	if err != nil {
 		if ctx.Err() == context.Canceled {
 			wrapped := fmt.Errorf("操作被用户中断")
@@ -139,24 +197,36 @@ func runExec(cmd *cobra.Command, args []string) error {
 			return newExit(ExitInterrupted, wrapped)
 		}
 		if ctx.Err() == context.DeadlineExceeded {
-			wrapped := fmt.Errorf("操作超时")
+			wrapped := fmt.Errorf("操作超时（%s）", execTimeout)
+			fmt.Fprintf(os.Stderr, "错误: %v\n", wrapped)
 			formatter.WriteError(wrapped)
-			return newExit(ExitError, wrapped)
+			return newExit(ExitTimeout, wrapped)
 		}
 		if strings.Contains(err.Error(), "拒绝执行") || strings.Contains(err.Error(), "已被安全模式禁止") {
 			formatter.WriteError(err)
-			return newExit(ExitToolDenied, err)
+			return newExit(ExitError, err)
 		}
 		formatter.WriteError(err)
 		return newExit(ExitError, err)
 	}
 
 	// 输出结果
-	if writeErr := formatter.WriteResult(result); writeErr != nil {
-		return newExit(ExitError, writeErr)
+	if format == output.FormatStreamJSON {
+		// stream-json: 输出 complete 事件
+		completeData := output.CompleteEventData{
+			Content:   result.Content,
+			ToolsUsed: result.ToolsUsed,
+		}
+		formatter.WriteEvent("complete", completeData)
+	} else if execQuiet {
+		// --quiet: 只输出最终结果文本
+		fmt.Print(result.Content)
+	} else {
+		if writeErr := formatter.WriteResult(result); writeErr != nil {
+			return newExit(ExitError, writeErr)
+		}
 	}
 
-	_ = errors.New("") // keep import for future use
 	return nil
 }
 

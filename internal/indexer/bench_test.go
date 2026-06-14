@@ -11,6 +11,13 @@ import (
 func createBenchDir(b *testing.B, n int) string {
 	b.Helper()
 	tmpDir := b.TempDir()
+	populateBenchDir(b, tmpDir, n)
+	return tmpDir
+}
+
+// populateBenchDir populates a directory with n source files for benchmarking.
+func populateBenchDir(b *testing.B, tmpDir string, n int) {
+	b.Helper()
 
 	exts := []string{".go", ".py", ".js", ".ts", ".md"}
 	contents := map[string]string{
@@ -32,8 +39,6 @@ func createBenchDir(b *testing.B, n int) string {
 			b.Fatalf("WriteFile() error: %v", err)
 		}
 	}
-
-	return tmpDir
 }
 
 // BenchmarkIndexerBuild benchmarks building index on a temp dir with 50 files.
@@ -76,5 +81,64 @@ func BenchmarkIndexerSearchFiles(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		idx.SearchFiles(queries[i%len(queries)])
+	}
+}
+
+// BenchmarkIndexBuild benchmarks building an index from scratch with 1000 small files.
+func BenchmarkIndexBuild(b *testing.B) {
+	tmpDir := createBenchDir(b, 1000)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx := NewIndexer(tmpDir)
+		if err := idx.Build(); err != nil {
+			b.Fatalf("Build() error: %v", err)
+		}
+	}
+}
+
+// BenchmarkIndexLoad benchmarks loading a cached index from disk.
+func BenchmarkIndexLoad(b *testing.B) {
+	// Use a manual temp dir to avoid Windows TempDir cleanup issues with .codecast subdirs
+	tmpDir, err := os.MkdirTemp("", "bench-index-load-*")
+	if err != nil {
+		b.Fatalf("MkdirTemp error: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Populate with files
+	populateBenchDir(b, tmpDir, 1000)
+
+	// Build once to create the cache
+	idx := NewIndexer(tmpDir)
+	if err := idx.Build(); err != nil {
+		b.Fatalf("Build() error: %v", err)
+	}
+	idx.Stop()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx2 := NewIndexer(tmpDir)
+		if err := idx2.BuildOrLoad(); err != nil {
+			b.Fatalf("BuildOrLoad() error: %v", err)
+		}
+		idx2.Stop()
+	}
+}
+
+// BenchmarkRepoMap benchmarks RepoMap (GetFileTree) generation on a 1000-file index.
+func BenchmarkRepoMap(b *testing.B) {
+	tmpDir := createBenchDir(b, 1000)
+	idx := NewIndexer(tmpDir)
+	if err := idx.Build(); err != nil {
+		b.Fatalf("Build() error: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tree := idx.GetFileTree()
+		if tree == "" {
+			b.Fatal("GetFileTree() returned empty string")
+		}
 	}
 }

@@ -357,7 +357,7 @@ func TestGrepSearch_KeepHardcodedSkipDirs(t *testing.T) {
 }
 
 // mustJSON 把 v 序列化成 json.RawMessage；出错则测试失败。
-func mustJSON(t *testing.T, v any) json.RawMessage {
+func mustJSON(t testing.TB, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)
 	if err != nil {

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"codecast/cli/internal/routing"
+
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
@@ -45,6 +47,8 @@ type Config struct {
 	PromptWeights   map[string]int `yaml:"prompt_weights,omitempty"`
 	// PromptProjectDir: 项目级 prompts 目录覆盖（默认 .codecast/prompts）
 	PromptProjectDir string `yaml:"prompt_project_dir,omitempty"`
+	// 智能模型路由配置
+	Routing routing.RoutingConfig `yaml:"routing,omitempty"`
 }
 
 // MaskedAPIKey 返回遮蔽后的 API Key（仅显示前4位和后4位）

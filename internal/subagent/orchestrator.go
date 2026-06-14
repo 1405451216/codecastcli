@@ -2,21 +2,28 @@ package subagent
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	ap "agentprimordia/pkg"
 	"codecast/cli/internal/config"
 	"codecast/cli/internal/provider"
+	"codecast/cli/internal/tui"
 )
 
 // Orchestrator 编排 Plan-Agent + Execute-Agent 双 Agent 协作
 type Orchestrator struct {
-	config    *config.Config
-	planAgent *ap.CapabilityAgent
-	execAgent *ap.CapabilityAgent
-	registry  *ap.ToolRegistry
-	memory    ap.MemoryStore
+	config             *config.Config
+	planAgent          *ap.CapabilityAgent
+	execAgent          *ap.CapabilityAgent
+	registry           *ap.ToolRegistry
+	memory             ap.MemoryStore
+	llmProvider        ap.Provider
+	dagView            *tui.DAGView
+	enableVisualization bool
 }
 
 // PlanResult 规划结果
@@ -50,16 +57,26 @@ func NewOrchestrator(cfg *config.Config, registry *ap.ToolRegistry, memory ap.Me
 	).WithToolkit(registry).WithMemory(memory)
 
 	return &Orchestrator{
-		config:    cfg,
-		planAgent: planAgent,
-		execAgent: execAgent,
-		registry:  registry,
-		memory:    memory,
+		config:             cfg,
+		planAgent:          planAgent,
+		execAgent:          execAgent,
+		registry:           registry,
+		memory:             memory,
+		llmProvider:        llmProvider,
+		dagView:            tui.NewDAGView("多 Agent 协作"),
+		enableVisualization: false,
 	}, nil
 }
 
 // PlanAndExecute 规划并执行任务（Plan → Execute 顺序 DAG）
 func (o *Orchestrator) PlanAndExecute(ctx context.Context, task string) (*ExecutionResult, error) {
+	// DAGView: add Plan Agent node and set to Running
+	if o.enableVisualization {
+		o.dagView.AddNode("plan", "Plan Agent")
+		o.dagView.UpdateNode("plan", tui.StatusRunning, "规划中...")
+		o.dagView.AddChildNode("plan", "execute", "Execute Agent")
+	}
+
 	// 构建 Plan → Execute 顺序 DAG
 	dag, err := ap.NewDAGBuilder("plan-execute").
 		DelegateNode("plan", o.planAgent).
@@ -67,12 +84,42 @@ func (o *Orchestrator) PlanAndExecute(ctx context.Context, task string) (*Execut
 		Edge("plan", "execute").
 		Build()
 	if err != nil {
+		if o.enableVisualization {
+			o.dagView.UpdateNode("plan", tui.StatusFailed, "DAG 构建失败")
+		}
 		return nil, fmt.Errorf("构建 DAG 失败: %w", err)
 	}
 
 	result, err := dag.Run(ctx, task)
 	if err != nil {
+		if o.enableVisualization {
+			o.dagView.UpdateNode("plan", tui.StatusFailed, "执行失败")
+			o.dagView.UpdateNode("execute", tui.StatusFailed, "执行失败")
+		}
 		return nil, fmt.Errorf("DAG 执行失败: %w", err)
+	}
+
+	// DAGView: update node statuses based on results
+	if o.enableVisualization {
+		if nr, ok := result.NodeResults["plan"]; ok {
+			if nr.Error != nil {
+				o.dagView.UpdateNode("plan", tui.StatusFailed, nr.Error.Error())
+			} else {
+				summary := nr.Output
+				if len(summary) > 60 {
+					summary = summary[:57] + "..."
+				}
+				o.dagView.UpdateNode("plan", tui.StatusCompleted, summary)
+			}
+		}
+		if nr, ok := result.NodeResults["execute"]; ok {
+			if nr.Error != nil {
+				o.dagView.UpdateNode("execute", tui.StatusFailed, nr.Error.Error())
+			} else {
+				o.dagView.UpdateNode("execute", tui.StatusRunning, "执行中...")
+				o.dagView.UpdateNode("execute", tui.StatusCompleted, "执行完成")
+			}
+		}
 	}
 
 	return &ExecutionResult{
@@ -83,17 +130,44 @@ func (o *Orchestrator) PlanAndExecute(ctx context.Context, task string) (*Execut
 }
 
 // ParallelExecute 并行执行多个独立子任务
+// 每个子任务使用独立的 Agent 实例和隔离的内存存储，避免上下文污染。
+// 最后通过聚合节点汇总所有子任务结果。
 func (o *Orchestrator) ParallelExecute(ctx context.Context, tasks []PlanTask) (*ExecutionResult, error) {
 	builder := ap.NewDAGBuilder("parallel-execute")
+
+	// DAGView: add Plan Agent node
+	if o.enableVisualization {
+		o.dagView.AddNode("plan", "Plan Agent")
+		o.dagView.UpdateNode("plan", tui.StatusRunning, "规划中...")
+	}
 
 	// 先规划
 	builder.DelegateNode("plan", o.planAgent)
 
-	// 为每个任务创建执行节点
+	// 为每个任务创建独立的执行 Agent（隔离内存，共享工具注册表）
 	for _, task := range tasks {
 		nodeID := fmt.Sprintf("exec_%s", task.ID)
-		_ = ap.NewAgentDelegateNode(nodeID, o.execAgent)
-		builder.DelegateNode(nodeID, o.execAgent)
+
+		// DAGView: add child node for each exec agent
+		if o.enableVisualization {
+			o.dagView.AddChildNode("plan", nodeID, fmt.Sprintf("Exec %s", task.ID))
+			o.dagView.UpdateNode(nodeID, tui.StatusPending, task.Description)
+		}
+
+		// 每个子任务创建独立的 Agent 实例，使用独立的内存存储
+		isolatedMemory, err := newIsolatedMemory(task.ID)
+		if err != nil {
+			return nil, fmt.Errorf("创建隔离内存失败 (task %s): %w", task.ID, err)
+		}
+		isolatedAgent := ap.NewAgent(
+			fmt.Sprintf("ExecuteAgent_%s", task.ID),
+			execSystemPrompt,
+			o.llmProvider,
+			ap.WithMaxTurns(15),
+		).WithToolkit(o.registry).WithMemory(isolatedMemory)
+
+		delegateNode := ap.NewAgentDelegateNode(nodeID, isolatedAgent)
+		builder.NodeWithAgent(nodeID, delegateNode)
 
 		// 设置依赖关系
 		if len(task.DependsOn) == 0 {
@@ -106,19 +180,82 @@ func (o *Orchestrator) ParallelExecute(ctx context.Context, tasks []PlanTask) (*
 		}
 	}
 
+	// DAGView: add aggregate node
+	if o.enableVisualization {
+		o.dagView.AddChildNode("plan", "aggregate", "Aggregate Agent")
+	}
+
+	// 聚合节点：收集所有子任务结果并生成摘要
+	aggregateMemory, err := newIsolatedMemory("aggregate")
+	if err != nil {
+		return nil, fmt.Errorf("创建聚合内存失败: %w", err)
+	}
+	aggregateAgent := ap.NewAgent(
+		"AggregateAgent",
+		aggregateSystemPrompt,
+		o.llmProvider,
+		ap.WithMaxTurns(3),
+	).WithToolkit(o.registry).WithMemory(aggregateMemory)
+
+	aggregateNode := ap.NewAgentDelegateNode("aggregate", aggregateAgent)
+	aggregateNode.WithInputMapper(ap.MapConcatAll())
+	builder.NodeWithAgent("aggregate", aggregateNode)
+
+	// 所有执行节点汇聚到聚合节点
+	for _, task := range tasks {
+		execNodeID := fmt.Sprintf("exec_%s", task.ID)
+		builder.Edge(execNodeID, "aggregate")
+	}
+
 	dag, err := builder.Build()
 	if err != nil {
+		if o.enableVisualization {
+			o.dagView.UpdateNode("plan", tui.StatusFailed, "DAG 构建失败")
+		}
 		return nil, fmt.Errorf("构建并行 DAG 失败: %w", err)
 	}
 
 	result, err := dag.Run(ctx, fmt.Sprintf("并行执行 %d 个子任务", len(tasks)))
 	if err != nil {
+		if o.enableVisualization {
+			o.dagView.UpdateNode("plan", tui.StatusFailed, "执行失败")
+		}
 		return nil, fmt.Errorf("并行执行失败: %w", err)
 	}
 
+	// DAGView: update all node statuses based on results
+	if o.enableVisualization {
+		if nr, ok := result.NodeResults["plan"]; ok {
+			if nr.Error != nil {
+				o.dagView.UpdateNode("plan", tui.StatusFailed, nr.Error.Error())
+			} else {
+				o.dagView.UpdateNode("plan", tui.StatusCompleted, "规划完成")
+			}
+		}
+		for _, task := range tasks {
+			nodeID := fmt.Sprintf("exec_%s", task.ID)
+			if nr, ok := result.NodeResults[nodeID]; ok {
+				if nr.Error != nil {
+					o.dagView.UpdateNode(nodeID, tui.StatusFailed, nr.Error.Error())
+				} else {
+					o.dagView.UpdateNode(nodeID, tui.StatusRunning, "执行中...")
+					o.dagView.UpdateNode(nodeID, tui.StatusCompleted, "执行完成")
+				}
+			}
+		}
+		if nr, ok := result.NodeResults["aggregate"]; ok {
+			if nr.Error != nil {
+				o.dagView.UpdateNode("aggregate", tui.StatusFailed, nr.Error.Error())
+			} else {
+				o.dagView.UpdateNode("aggregate", tui.StatusCompleted, "汇总完成")
+			}
+		}
+	}
+
 	return &ExecutionResult{
-		DAGResult: result,
-		Plan:      extractNodeOutput(result, "plan"),
+		DAGResult:  result,
+		Plan:       extractNodeOutput(result, "plan"),
+		Aggregation: extractNodeOutput(result, "aggregate"),
 	}, nil
 }
 
@@ -133,9 +270,10 @@ func (o *Orchestrator) PlanOnly(ctx context.Context, task string) (string, error
 
 // ExecutionResult 执行结果
 type ExecutionResult struct {
-	DAGResult *ap.DAGResult
-	Plan      string
-	Execution string
+	DAGResult   *ap.DAGResult
+	Plan        string
+	Execution   string
+	Aggregation string
 }
 
 // Summary 返回执行结果摘要
@@ -166,4 +304,31 @@ func extractNodeOutput(result *ap.DAGResult, nodeID string) string {
 		return nr.Output
 	}
 	return ""
+}
+
+// newIsolatedMemory 创建独立的 SQLite 内存存储实例。
+// 使用唯一文件路径避免 cache=shared 模式下的跨实例共享问题，
+// 确保每个子任务的内存完全隔离。
+func newIsolatedMemory(id string) (ap.MemoryStore, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return nil, fmt.Errorf("生成随机 ID 失败: %w", err)
+	}
+	tmpDir := os.TempDir()
+	dbPath := filepath.Join(tmpDir, fmt.Sprintf("codecast_subagent_%s_%x.db", id, b))
+	store, err := ap.NewSQLiteStore(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("创建隔离 SQLite 存储失败: %w", err)
+	}
+	return store, nil
+}
+
+// GetDAGView 返回编排器的 DAGView 实例
+func (o *Orchestrator) GetDAGView() *tui.DAGView {
+	return o.dagView
+}
+
+// SetVisualization 启用或禁用 DAG 可视化
+func (o *Orchestrator) SetVisualization(enabled bool) {
+	o.enableVisualization = enabled
 }

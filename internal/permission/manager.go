@@ -82,6 +82,27 @@ type HITLConfig struct {
 	AutoApproveTools []string
 }
 
+// HITLManagerWrapper 封装 HITL 通道管理，提供线程安全的请求/响应交互。
+// 交互层（interactive.go）通过 PendingRequest 读取挂起的中断请求，
+// 通过 SendResponse 发回人类响应。
+type HITLManagerWrapper struct {
+	responseCh chan *HumanResponse
+	pending    *InterruptRequest
+	mu         sync.RWMutex
+}
+
+// PendingRequest 返回当前挂起的中断请求（nil 表示无挂起请求）
+func (w *HITLManagerWrapper) PendingRequest() *InterruptRequest {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.pending
+}
+
+// SendResponse 发送人类响应，解除 HITL 阻塞
+func (w *HITLManagerWrapper) SendResponse(resp *HumanResponse) {
+	w.responseCh <- resp
+}
+
 // Manager 权限管理器
 type Manager struct {
 	mode        ApprovalMode
@@ -90,6 +111,10 @@ type Manager struct {
 	userAllowed map[string]bool // 用户运行时通过 AddAutoAllow 显式加入的条目；
 	// SetMode 时不会被 mode 默认集合覆盖清除
 	mu          sync.RWMutex
+	// HITL 集成：管理器持有 HITLConfig 和响应通道，
+	// 供 OnInterrupt 回调写入请求、交互层读取并回复。
+	hitlConfig    HITLConfig
+	hitlMgr       *HITLManagerWrapper
 }
 
 // NewManager 根据模式创建权限管理器
@@ -182,9 +207,9 @@ func (m *Manager) IsDenied(toolName string) bool {
 //   - 重新计算 mode 默认白名单（auto-edit: 只读+编辑；full-auto: 全部）
 //   - 用户通过 AddAutoAllow 加入的条目（userAllowed）始终保留
 //   - denyList 始终保留；denyList 永远胜出（覆盖 mode 默认白名单）
+//   - 重建 HITL 配置以反映新模式
 func (m *Manager) SetMode(mode ApprovalMode) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.mode = mode
 
 	// 重置 autoAllow = mode 默认 + 用户白名单
@@ -211,6 +236,10 @@ func (m *Manager) SetMode(mode ApprovalMode) {
 	for tool := range m.denyList {
 		delete(m.autoAllow, tool)
 	}
+	m.mu.Unlock()
+
+	// 重建 HITL 配置（在锁外执行，BuildHITLConfig 内部会加锁）
+	m.rebuildHITLConfig()
 }
 
 // SetModeByName 是 SetMode 的字符串入口，解析失败返回错误。
@@ -239,28 +268,33 @@ func (m *Manager) AddDeny(toolName string) {
 	m.denyList[toolName] = true
 }
 
-// BuildHITLConfig 生成 HITL 配置。
-// F-11 状态：F-03 修好后，路径已经清晰 ——
-//  - 框架的 CapabilityAgent.WithHITL(cfg HITLConfig) 接受 *agent.HITLConfig
-//    （注意是框架自己的类型，不是 codecastcli 的 permission.HITLConfig）
-//  - 当前的 buildPermHook 已经覆盖了相同语义（confirm + 4 选项 UI）
-//  - 完整的 HITL 集成需要：把本函数改成构造 *agent.HITLConfig
-//    并加 ap.WithHITL(...) 注入；本轮没有改这个，因为当前 buildPermHook
-//    行为更直接，不绕 HITLManager 通道。
-// 保留本函数供未来扩展（多步 plan / decision point）。
-func (m *Manager) BuildHITLConfig(onInterrupt func(req *InterruptRequest)) HITLConfig {
+// BuildHITLConfig 生成 HITL 配置，同时初始化 Manager 内部的 HITLManagerWrapper。
+//
+// 工作原理：
+//   - ModeSuggest: 所有工具需确认（InterruptPoint.ToolName="" 匹配所有工具），
+//     AutoApproveTools 为空
+//   - ModeAutoEdit: 所有工具设为中断点，但只读/编辑类工具加入 AutoApproveTools
+//     跳过确认，仅危险工具和 MCP 工具需确认
+//   - ModeFullAuto: 无中断点，所有工具自动放行
+//
+// OnInterrupt 回调将请求存入 HITLManagerWrapper.pending，
+// 交互层通过 m.HitlManager().PendingRequest() 读取并渲染确认提示，
+// 用户响应后通过 m.HitlManager().SendResponse() 发回。
+func (m *Manager) BuildHITLConfig() HITLConfig {
 	var interruptPoints []InterruptPoint
 
 	switch m.mode {
 	case ModeSuggest:
+		// 所有工具需确认
 		interruptPoints = append(interruptPoints, InterruptPoint{
 			Type:     InterruptToolConfirm,
 			ToolName: "", // 空字符串 = 所有工具
 		})
 	case ModeAutoEdit:
+		// 所有工具设为中断点，通过 AutoApproveTools 过滤安全的工具
 		interruptPoints = append(interruptPoints, InterruptPoint{
 			Type:     InterruptToolConfirm,
-			ToolName: "", // 所有工具，通过 AutoApproveTools 过滤
+			ToolName: "",
 		})
 	case ModeFullAuto:
 		// 全自动模式：无中断点
@@ -273,16 +307,116 @@ func (m *Manager) BuildHITLConfig(onInterrupt func(req *InterruptRequest)) HITLC
 	}
 	m.mu.RUnlock()
 
-	humanInputCh := make(chan *HumanResponse, 8)
+	responseCh := make(chan *HumanResponse, 8)
+
+	wrapper := &HITLManagerWrapper{
+		responseCh: responseCh,
+	}
+	m.hitlMgr = wrapper
+
+	onInterrupt := func(req *InterruptRequest) {
+		wrapper.mu.Lock()
+		wrapper.pending = req
+		wrapper.mu.Unlock()
+	}
 
 	cfg := HITLConfig{
 		InterruptPoints:  interruptPoints,
-		HumanInputChan:   humanInputCh,
+		HumanInputChan:   responseCh,
 		OnInterrupt:      onInterrupt,
 		AutoApproveTools: autoApproveTools,
 	}
 
+	m.hitlConfig = cfg
 	return cfg
+}
+
+// HitlManager 返回 HITL 管理器包装，供交互层读取挂起请求和发送响应。
+// 必须在 BuildHITLConfig() 之后调用，否则返回 nil。
+func (m *Manager) HitlManager() *HITLManagerWrapper {
+	return m.hitlMgr
+}
+
+// HitlConfig 返回当前 HITL 配置
+func (m *Manager) HitlConfig() HITLConfig {
+	return m.hitlConfig
+}
+
+// ShouldInterrupt 判断工具是否需要 HITL 中断确认。
+// 语义与 AP 框架的 HITLManager.ShouldInterrupt 一致：
+//   - 工具在 AutoApproveTools 中 → 不中断
+//   - 工具匹配 InterruptPoint（空 ToolName 匹配所有）→ 需中断
+//   - 无匹配的 InterruptPoint → 不中断
+func (m *Manager) ShouldInterrupt(toolName string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// 被禁止的工具不需要中断（直接拒绝）
+	if m.denyList[toolName] {
+		return false
+	}
+
+	// 自动放行的工具不需要中断
+	if m.autoAllow[toolName] {
+		return false
+	}
+
+	for _, ip := range m.hitlConfig.InterruptPoints {
+		if ip.Type != InterruptToolConfirm {
+			continue
+		}
+		if ip.ToolName == "" || ip.ToolName == toolName {
+			return true
+		}
+	}
+	return false
+}
+
+// rebuildHITLConfig 内部方法：重建 HITL 配置，保留已有的 responseCh 和 wrapper。
+// SetMode 调用此方法而非 BuildHITLConfig，避免创建新通道导致响应丢失。
+func (m *Manager) rebuildHITLConfig() {
+	var interruptPoints []InterruptPoint
+
+	switch m.mode {
+	case ModeSuggest:
+		interruptPoints = append(interruptPoints, InterruptPoint{
+			Type:     InterruptToolConfirm,
+			ToolName: "",
+		})
+	case ModeAutoEdit:
+		interruptPoints = append(interruptPoints, InterruptPoint{
+			Type:     InterruptToolConfirm,
+			ToolName: "",
+		})
+	case ModeFullAuto:
+	}
+
+	var autoApproveTools []string
+	m.mu.RLock()
+	for tool := range m.autoAllow {
+		autoApproveTools = append(autoApproveTools, tool)
+	}
+	m.mu.RUnlock()
+
+	// 复用已有的 wrapper 和 responseCh
+	if m.hitlMgr == nil {
+		// 首次构建，走 BuildHITLConfig
+		m.BuildHITLConfig()
+		return
+	}
+
+	onInterrupt := func(req *InterruptRequest) {
+		m.hitlMgr.mu.Lock()
+		m.hitlMgr.pending = req
+		m.hitlMgr.mu.Unlock()
+	}
+
+	m.hitlConfig = HITLConfig{
+		InterruptPoints:  interruptPoints,
+		HumanInputChan:   m.hitlMgr.responseCh,
+		OnInterrupt:      onInterrupt,
+		AutoApproveTools: autoApproveTools,
+	}
 }
 
 // SendHumanResponse 通过 HITLConfig 发送人类响应

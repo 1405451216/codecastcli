@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"sync/atomic"
 
 	ap "agentprimordia/pkg"
@@ -24,6 +26,7 @@ import (
 	"codecast/cli/internal/permission"
 	"codecast/cli/internal/provider"
 	"codecast/cli/internal/rules"
+	"codecast/cli/internal/routing"
 	"codecast/cli/internal/sandbox"
 	sessionpkg "codecast/cli/internal/session"
 	customtools "codecast/cli/internal/tools"
@@ -69,11 +72,23 @@ type CodecastAgent struct {
 	currentVariant string
 	// routerPrompt 路由决策器（懒初始化：首次 SelectRouted 策略时构造）。
 	routerPrompt *RouterCache
+	// router 智能模型路由器（根据输入复杂度自动选择模型）
+	router *routing.ModelRouter
 
 	// processing 标记 StreamProcess / Process 是否正在执行。
 	// 由 SIGINT handler 读取，用于决定 Ctrl+C 是取消当前请求还是退出 REPL。
 	// 零值为 false，安全。
 	processing atomic.Bool
+
+	// compressedHistory 存储摘要压缩后的消息（由 SummarizeContext 写入）。
+	// 下一轮 Process / StreamProcess 时会将其作为上下文前缀注入到用户消息中，
+	// 注入后清空，确保只注入一次。
+	compressedHistory []ap.Message
+
+	// summarizeMu prevents concurrent summarization.
+	summarizeMu sync.Mutex
+	// summarizing indicates whether a summarization is in progress.
+	summarizing bool
 }
 
 // newAgent 内部工厂函数
@@ -144,18 +159,35 @@ func newAgent(cfg *config.Config, sessionID string) (*CodecastAgent, error) {
 	// 权限管理器
 	permMode := cfg.PermissionMode
 	if permMode == "" {
-		permMode = "suggest"
+		permMode = "auto-edit"
 	}
 	permMgr, err := permission.NewManagerFromString(permMode)
 	if err != nil {
 		return nil, fmt.Errorf("创建权限管理器失败: %w", err)
 	}
 
+	// 初始化 HITL 配置（构建 InterruptPoints、AutoApproveTools、OnInterrupt 回调）
+	permMgr.BuildHITLConfig()
+
 	if cfg.SafeMode {
+		// SafeMode: 从工具注册表中真正移除危险工具，而非仅加黑名单。
+		// 这样 LLM 根本看不到这些工具，不会尝试调用。
+		registry.Unregister("shell_execute")
+		// web_request / web_fetch 可能不在 registry 中（取决于 DefaultToolkit 配置），
+		// Unregister 不存在的工具是 no-op，安全调用。
+		registry.Unregister("web_request")
+		registry.Unregister("web_fetch")
+		// 同时加入黑名单，防止 MCP 工具或动态注册的同名工具绕过
 		permMgr.AddDeny("shell_execute")
 		permMgr.AddDeny("web_request")
 		permMgr.AddDeny("web_fetch")
 	}
+
+	// HITL 集成：为需要确认的工具设置 ToolPermission.ConfirmFunc。
+	// 这是 AP 框架 executor 层面的权限检查（在 Hook 之前执行），
+	// 与 buildPermHook 形成双重保障。
+	// ConfirmFunc 返回 true=允许，false=拒绝。
+	applyToolPermissions(registry, permMgr)
 
 	// 创建 Diff 预览器
 	diffPrev := diff.NewPreviewer()
@@ -254,6 +286,9 @@ func newAgent(cfg *config.Config, sessionID string) (*CodecastAgent, error) {
 	// 创建模型切换器
 	modelSwitch := model.NewSwitcher(cfg)
 
+	// 创建智能模型路由器
+	router := routing.NewModelRouter(cfg.Routing)
+
 	// 创建 TUI 渲染器
 	tuiRenderer := tui.NewRenderer()
 
@@ -289,6 +324,7 @@ func newAgent(cfg *config.Config, sessionID string) (*CodecastAgent, error) {
 		sharedDB:      sharedDB,
 		ab:            LoadABIntegration(""),
 		routerPrompt:  NewRouterCache(),
+		router:        router,
 	}, nil
 }
 
@@ -337,6 +373,48 @@ func buildPermHook(mgr *permission.Manager) ap.HookFunc {
 		}
 
 		return nil
+	}
+}
+
+// applyToolPermissions 为注册表中的工具设置 AP 框架级别的 ToolPermission。
+//
+// 这是 HITL 集成在 executor 层面的体现：
+//   - 需要确认的工具（ShouldApprove=true）设置 RequireConfirmation=true + ConfirmFunc
+//   - ConfirmFunc 调用 permission.ConfirmPrompt 获取用户输入
+//   - ModeFullAuto 下所有工具不设 ConfirmFunc（自动放行）
+//   - SafeMode 下被禁止的工具已在上方 Unregister，不会到达此处
+//
+// 与 buildPermHook 的关系：两者形成双重保障。
+// ToolPermission 在 executor.Execute() 内部执行（更底层），
+// buildPermHook 在 ReAct 循环的 HookBeforeTool 阶段执行（更上层）。
+// 实际上 buildPermHook 先执行（因为 HookBeforeTool 在 executor 之前），
+// 所以 ConfirmPrompt 只会被调用一次。
+func applyToolPermissions(registry *ap.ToolRegistry, mgr *permission.Manager) {
+	for _, toolName := range registry.List() {
+		if !mgr.ShouldApprove(toolName) {
+			continue
+		}
+		// 为需要确认的工具设置 ConfirmFunc
+		perm := ap.ToolPermission{
+			RequireConfirmation: true,
+			ConfirmFunc: func(name string, args json.RawMessage) bool {
+				result := permission.ConfirmPrompt(name, string(args))
+				switch result.Action {
+				case permission.ActionAllow:
+					return true
+				case permission.ActionAlwaysAllow:
+					mgr.AddAutoAllow(name)
+					return true
+				case permission.ActionEditArgs:
+					// ConfirmFunc 无法修改参数，只能允许/拒绝
+					// 参数修改由 buildPermHook 处理
+					return true
+				default:
+					return false
+				}
+			},
+		}
+		_ = registry.SetPermission(toolName, perm)
 	}
 }
 
@@ -471,6 +549,11 @@ func (a *CodecastAgent) IsProcessing() bool {
 	return a.processing.Load()
 }
 
+// GetRegistry 返回工具注册表
+func (a *CodecastAgent) GetRegistry() *ap.ToolRegistry {
+	return a.registry
+}
+
 // PermMgr 返回权限管理器
 func (a *CodecastAgent) PermMgr() *permission.Manager {
 	return a.permMgr
@@ -496,6 +579,11 @@ func (a *CodecastAgent) GetAutoMemory() *automem.AutoPersister {
 // GetModelSwitcher 返回模型切换器
 func (a *CodecastAgent) GetModelSwitcher() *model.Switcher {
 	return a.modelSwitcher
+}
+
+// GetRouter 返回智能模型路由器
+func (a *CodecastAgent) GetRouter() *routing.ModelRouter {
+	return a.router
 }
 
 // GetSandbox 返回沙箱执行器（F10: 懒加载）
@@ -575,6 +663,9 @@ func (a *CodecastAgent) SwitchModel(modelID string) error {
 	hooks.Register(ap.HookBeforeTool, buildUndoHook(a.undoMgr))
 	hooks.Register(ap.HookBeforeTool, buildCheckpointHook(a.checkpointMgr))
 
+	// 重新应用 ToolPermission（HITL 集成）
+	applyToolPermissions(a.registry, a.permMgr)
+
 	projectRules := loadProjectRules()
 	// F-09 修复：SwitchModel 重建时也走 PromptResolver，让运行时切换后
 	// 依然使用与 newAgent 一致的 prompt 选择策略。
@@ -630,7 +721,7 @@ func (a *CodecastAgent) Process(ctx context.Context, userInput string) error {
 	if a.ab != nil {
 		a.ab.StartRound(a.currentVariant)
 	}
-	resp, err := a.session.Ask(ctx, userInput)
+	resp, err := a.session.Ask(ctx, a.injectCompressedContext(userInput))
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("请求超时: %w\n💡 请检查: 1) 网络连接是否正常 2) 模型响应是否过慢，可尝试切换模型", err)
@@ -650,6 +741,9 @@ func (a *CodecastAgent) Process(ctx context.Context, userInput string) error {
 		go mem.LearnFromConversation(userInput, resp.Content)
 	}
 
+	// Trigger async summarization after each turn
+	a.asyncSummarize(ctx)
+
 	return nil
 }
 
@@ -663,7 +757,7 @@ func (a *CodecastAgent) ProcessWithResult(ctx context.Context, userInput string)
 	if a.ab != nil {
 		a.ab.StartRound(a.currentVariant)
 	}
-	resp, err := a.session.Ask(ctx, userInput)
+	resp, err := a.session.Ask(ctx, a.injectCompressedContext(userInput))
 	if err != nil {
 		return nil, err
 	}
@@ -735,14 +829,61 @@ func (a *CodecastAgent) recordCost(usage ap.AgentUsage, command string) {
 
 // ClearContext 清除会话上下文
 func (a *CodecastAgent) ClearContext() {
+	a.compressedHistory = nil
 	a.session = nil
 	a.session = ap.NewSession(a.agent, a.memory)
 	a.sessionID = a.session.SessionID()
 }
 
+// injectCompressedContext 将摘要压缩的上下文注入到用户输入前缀中。
+// 调用后清空 compressedHistory，确保只注入一次。
+// 返回带上下文前缀的用户输入；如果无压缩历史则原样返回。
+func (a *CodecastAgent) injectCompressedContext(userInput string) string {
+	if len(a.compressedHistory) == 0 {
+		return userInput
+	}
+
+	var sb strings.Builder
+	sb.WriteString("[上一轮对话的摘要上下文]\n")
+	for _, m := range a.compressedHistory {
+		// 只注入摘要 system 消息和最近保留的消息（跳过原始 system prompt）
+		if m.Role == ap.RoleSystem {
+			if extra, ok := m.Metadata.Extra["summary"]; ok && extra == "true" {
+				sb.WriteString(m.Content)
+				sb.WriteString("\n")
+			}
+			// 跳过非摘要的 system 消息（原始 system prompt 由 agent 自身注入）
+			continue
+		}
+		role := string(m.Role)
+		content := m.Content
+		if len(content) > 300 {
+			content = content[:300] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("[%s]: %s\n", role, content))
+	}
+	sb.WriteString("\n[当前用户消息]\n")
+
+	// 清空，确保只注入一次
+	a.compressedHistory = nil
+
+	return sb.String() + userInput
+}
+
 // GetStats 返回 Agent 统计信息
 func (a *CodecastAgent) GetStats() ap.AgentStats {
 	return a.agent.Stats()
+}
+
+// InjectCompressedContext 是 injectCompressedContext 的导出版本，
+// 供 TUI 适配器（CodecastAgentAdapter）调用。
+func (a *CodecastAgent) InjectCompressedContext(userInput string) string {
+	return a.injectCompressedContext(userInput)
+}
+
+// CapabilityAgent 返回底层 *ap.CapabilityAgent，供 TUI 适配器直接调用 StreamRun。
+func (a *CodecastAgent) CapabilityAgent() *ap.CapabilityAgent {
+	return a.agent
 }
 
 // Close 关闭 Agent 资源
@@ -817,4 +958,116 @@ func loadProjectRules() string {
 // GetTokenBudget 获取当前模型的 Token 预算
 func (a *CodecastAgent) GetTokenBudget() *ctxpkg.TokenBudget {
 	return ctxpkg.NewTokenBudget(a.config.Model, 0)
+}
+
+// asyncSummarize runs summarization in a background goroutine after each turn.
+// It uses a mutex to prevent concurrent summarization. If SummaryModel is
+// configured, it creates a separate provider for summarization; otherwise it
+// uses the main model.
+func (a *CodecastAgent) asyncSummarize(ctx context.Context) {
+	a.summarizeMu.Lock()
+	if a.summarizing {
+		a.summarizeMu.Unlock()
+		return
+	}
+	a.summarizing = true
+	a.summarizeMu.Unlock()
+
+	go func() {
+		defer func() {
+			a.summarizeMu.Lock()
+			a.summarizing = false
+			a.summarizeMu.Unlock()
+		}()
+
+		// Check if summarization is needed using the compressor
+		if a.session == nil {
+			return
+		}
+		history := a.session.History()
+		if len(history) <= 2 {
+			return
+		}
+
+		// Check token budget threshold
+		tb := a.GetTokenBudget()
+		if tb == nil {
+			return
+		}
+		threshold := a.config.ContextThreshold
+		if threshold <= 0 {
+			threshold = 0.7
+		}
+		if !tb.ShouldCompress(threshold) {
+			return
+		}
+
+		// Build summary function — use SummaryModel if configured
+		summaryFn := func(ctx context.Context, prompt string) (string, error) {
+			if a.config.SummaryModel != "" {
+				// Create a separate provider for summarization
+				summaryCfg := *a.config
+				summaryCfg.Model = a.config.SummaryModel
+				summaryProvider, err := provider.CreateProvider(&summaryCfg)
+				if err != nil {
+					// Fallback to main provider
+					resp, err := a.agent.Run(ctx, ap.UserMessage(prompt))
+					if err != nil {
+						return "", err
+					}
+					if resp == nil {
+						return "", fmt.Errorf("LLM 返回空响应")
+					}
+					return resp.Content, nil
+				}
+				summaryAgent := ap.NewAgent("SummaryAgent", "You are a conversation summarizer.", summaryProvider)
+				resp, err := summaryAgent.Run(ctx, ap.UserMessage(prompt))
+				if err != nil {
+					return "", err
+				}
+				if resp == nil {
+					return "", fmt.Errorf("摘要 LLM 返回空响应")
+				}
+				return resp.Content, nil
+			}
+			// Use main model
+			resp, err := a.agent.Run(ctx, ap.UserMessage(prompt))
+			if err != nil {
+				return "", err
+			}
+			if resp == nil {
+				return "", fmt.Errorf("LLM 返回空响应")
+			}
+			return resp.Content, nil
+		}
+
+		compressor := ctxpkg.NewCompressor(a.config.PreserveRecent)
+		compressed, err := compressor.Compress(ctx, history, summaryFn)
+		if err != nil || len(compressed) == 0 {
+			return
+		}
+
+		// Store compressed history for next turn injection
+		a.compressedHistory = compressed
+
+		// Persist summary to memory for session recovery
+		if a.memory != nil {
+			for _, m := range compressed {
+				if m.Role == ap.RoleSystem {
+					if extra, ok := m.Metadata.Extra["summary"]; ok && extra == "true" {
+						_ = a.memory.Add(ctx, &ap.Episode{
+							SessionID: a.sessionID,
+							Role:      "system",
+							Content:   m.Content,
+							Metadata:  map[string]string{"summary": "true"},
+						})
+						break
+					}
+				}
+			}
+		}
+
+		// Reset session since we have the summary saved
+		a.session.Reset()
+	}()
 }

@@ -190,3 +190,78 @@ type CompleteEventData struct {
 type ErrorEventData struct {
 	Message string `json:"message"`
 }
+
+// StreamJSONFormatter provides NDJSON streaming output with typed events.
+// Each event is a single JSON object per line:
+//   - {"type":"token","content":"..."}
+//   - {"type":"tool_call","tool":"...","args":{...}}
+//   - {"type":"tool_result","tool":"...","content":"..."}
+//   - {"type":"complete","result":"...","usage":{...}}
+//   - {"type":"error","message":"..."}
+type StreamJSONFormatter struct {
+	writer io.Writer
+}
+
+// NewStreamJSONFormatter creates a new StreamJSONFormatter
+func NewStreamJSONFormatter(w io.Writer) *StreamJSONFormatter {
+	if w == nil {
+		w = os.Stdout
+	}
+	return &StreamJSONFormatter{writer: w}
+}
+
+// writeLine marshals obj to JSON and writes it as a single line
+func (s *StreamJSONFormatter) writeLine(obj map[string]any) error {
+	jsonData, err := json.Marshal(obj)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(s.writer, "%s\n", jsonData)
+	return err
+}
+
+// WriteToken outputs a token event: {"type":"token","content":"..."}
+func (s *StreamJSONFormatter) WriteToken(content string) error {
+	return s.writeLine(map[string]any{
+		"type":    "token",
+		"content": content,
+	})
+}
+
+// WriteToolCall outputs a tool_call event: {"type":"tool_call","tool":"...","args":{...}}
+func (s *StreamJSONFormatter) WriteToolCall(tool string, args any) error {
+	return s.writeLine(map[string]any{
+		"type": "tool_call",
+		"tool": tool,
+		"args": args,
+	})
+}
+
+// WriteToolResult outputs a tool_result event: {"type":"tool_result","tool":"...","content":"..."}
+func (s *StreamJSONFormatter) WriteToolResult(tool, content string) error {
+	return s.writeLine(map[string]any{
+		"type":    "tool_result",
+		"tool":    tool,
+		"content": content,
+	})
+}
+
+// WriteComplete outputs a complete event: {"type":"complete","result":"...","usage":{...}}
+func (s *StreamJSONFormatter) WriteComplete(result string, usage any) error {
+	obj := map[string]any{
+		"type":   "complete",
+		"result": result,
+	}
+	if usage != nil {
+		obj["usage"] = usage
+	}
+	return s.writeLine(obj)
+}
+
+// WriteError outputs an error event: {"type":"error","message":"..."}
+func (s *StreamJSONFormatter) WriteError(message string) error {
+	return s.writeLine(map[string]any{
+		"type":    "error",
+		"message": message,
+	})
+}

@@ -47,9 +47,19 @@ func init() {
 	rootCmd.PersistentFlags().String("log-format", "text", "日志格式 (text/json)")
 	rootCmd.PersistentFlags().BoolP("continue", "c", false, "继续最近的会话")
 	rootCmd.PersistentFlags().StringP("resume", "r", "", "恢复指定会话 ID")
-	rootCmd.PersistentFlags().String("permission-mode", "suggest", "权限审批模式 (suggest/auto-edit/full-auto)")
+	rootCmd.PersistentFlags().String("permission-mode", "auto-edit", "权限审批模式 (suggest/auto-edit/full-auto)")
 	rootCmd.PersistentFlags().StringArray("scope", []string{}, "文件访问范围（可多次指定，默认为当前目录）")
 	rootCmd.PersistentFlags().Bool("safe", false, "安全模式（禁用 Shell 和 Web 工具）")
+	// --tui flag: 启用 Bubble Tea TUI 模式
+	// 集成方式：在 rootCmd.Run 中检查 viper.GetBool("tui")，
+	// 若为 true 则调用 agent.RunTUI(ag, cfg.Model, cfg.PermissionMode) 替代 runInteractive()。
+	// 示例：
+	//   if viper.GetBool("tui") {
+	//       ag, err := agent.NewCodecastAgent(cfg, sessionID)
+	//       if err != nil { ... }
+	//       return agent.RunTUI(ag, cfg.Model, cfg.PermissionMode)
+	//   }
+	rootCmd.PersistentFlags().Bool("tui", false, "启用 Bubble Tea TUI 界面（替代 go-prompt REPL）")
 	// F1: 智能上下文管理
 	rootCmd.PersistentFlags().Bool("auto-compact", false, "上下文接近上限时自动压缩")
 	rootCmd.PersistentFlags().Float64("auto-compact-ratio", 0.8, "自动压缩触发比例（0.0-1.0）")
@@ -97,6 +107,9 @@ func init() {
 	}
 	if err := viper.BindPFlag("safe_mode", rootCmd.PersistentFlags().Lookup("safe")); err != nil {
 		fmt.Fprintln(os.Stderr, "绑定 safe flag 失败:", err)
+	}
+	if err := viper.BindPFlag("tui", rootCmd.PersistentFlags().Lookup("tui")); err != nil {
+		fmt.Fprintln(os.Stderr, "绑定 tui flag 失败:", err)
 	}
 	if err := viper.BindPFlag("auto_compact", rootCmd.PersistentFlags().Lookup("auto-compact")); err != nil {
 		fmt.Fprintln(os.Stderr, "绑定 auto-compact flag 失败:", err)

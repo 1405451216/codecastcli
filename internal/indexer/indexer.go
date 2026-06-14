@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // FileEntry 文件条目
@@ -21,6 +23,7 @@ type FileEntry struct {
 	Language string    `json:"language"`
 	Imports  []string  `json:"imports,omitempty"`
 	Exports  []string  `json:"exports,omitempty"`
+	Tags     []Tag     `json:"tags,omitempty"`
 	IsDir    bool      `json:"is_dir"`
 }
 
@@ -49,6 +52,8 @@ type Indexer struct {
 	mu         sync.RWMutex
 	ignoreDirs []string
 	ignoreExts map[string]bool
+	watcher    *fsnotify.Watcher
+	done       chan struct{}
 }
 
 // NewIndexer 创建索引器
@@ -59,6 +64,7 @@ func NewIndexer(rootDir string) *Indexer {
 			Files:     make(map[string]*FileEntry),
 			Languages: make(map[string]int),
 		},
+		done: make(chan struct{}),
 		ignoreDirs: []string{
 			".git", ".svn", ".hg",
 			"node_modules", "vendor", "__pycache__",
@@ -79,7 +85,7 @@ func NewIndexer(rootDir string) *Indexer {
 	}
 }
 
-// Build 构建索引（同步）
+// Build 构建索引（同步），构建完成后保存缓存
 func (idx *Indexer) Build() error {
 	return idx.BuildWithCallback(nil)
 }
@@ -129,7 +135,15 @@ func (idx *Indexer) BuildWithCallback(cb func(path string)) error {
 			IsDir:    false,
 		}
 
-		// 提取依赖信息（限制文件大小避免处理大文件）
+		// 提取代码标签（轻量，始终执行）
+		if info.Size() < 500*1024 { // 500KB 以下
+			data, err := os.ReadFile(path)
+			if err == nil {
+				entry.Tags = extractTags(path, data, entry.Language)
+			}
+		}
+
+		// 提取依赖信息（较重，限制文件大小）
 		if info.Size() < 100*1024 { // 100KB 以下
 			idx.extractDependencies(path, entry)
 		}
@@ -164,6 +178,10 @@ func (idx *Indexer) BuildWithCallback(cb func(path string)) error {
 
 	idx.index.IndexedAt = time.Now()
 	idx.mu.Unlock()
+
+	// 构建完成后保存缓存
+	_ = idx.saveCache()
+
 	return nil
 }
 

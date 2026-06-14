@@ -13,6 +13,21 @@ import (
 	"github.com/fatih/color"
 )
 
+// countFileReferences 统计用户输入中 @file 引用的数量
+func countFileReferences(input string) int {
+	count := 0
+	inRef := false
+	for i := 0; i < len(input); i++ {
+		if input[i] == '@' && !inRef {
+			inRef = true
+			count++
+		} else if input[i] == ' ' || input[i] == '\t' || input[i] == '\n' {
+			inRef = false
+		}
+	}
+	return count
+}
+
 // StreamProcess 以流式方式处理用户输入，实时输出 token（DI-6: 使用 tui.StreamPrinter）
 //
 // 重试策略（Task 1.5 — API 重试与 Provider 降级）：
@@ -37,7 +52,22 @@ func (a *CodecastAgent) StreamProcess(ctx context.Context, userInput string) err
 		}
 	}
 
-	msg := ap.UserMessage(userInput)
+	msg := ap.UserMessage(a.injectCompressedContext(userInput))
+
+	// 智能模型路由：根据输入复杂度自动选择合适的模型
+	if a.router != nil && a.router.IsEnabled() {
+		fileCount := countFileReferences(userInput)
+		routedModel := a.router.Route(userInput, fileCount)
+		currentModel := a.config.Model
+		if routedModel != "" && routedModel != currentModel {
+			color.HiBlack("🔀 路由: %s → %s", currentModel, routedModel)
+			if err := a.SwitchModel(routedModel); err != nil {
+				// 路由切换失败不阻塞请求，继续使用当前模型
+				color.HiBlack("路由切换失败，继续使用 %s: %v", currentModel, err)
+			}
+		}
+	}
+
 	// 任务感知路由：每轮根据用户输入 + 工具诉求重选变体
 	// （在 WithRetry 之外，避免重试时重复 StartRound/重复选变体）
 	a.selectVariantForInput(userInput, false)
@@ -117,6 +147,8 @@ func (a *CodecastAgent) runStreamOnce(ctx context.Context, msg ap.Message, userI
 					resp.Metrics.TotalTurns, resp.Metrics.TotalTools, formatTokenCount(resp.Usage.TotalTokens))
 				color.HiBlack(statsLine)
 			}
+			// Trigger async summarization after each turn
+			a.asyncSummarize(ctx)
 
 		case ap.StreamEventError:
 			spinner.Stop()
@@ -179,8 +211,9 @@ func (a *CodecastAgent) checkAutoCompact(usage ap.AgentUsage) {
 // 行为：
 //  1. 取出 session.History()
 //  2. 用 Compressor + LLM 摘要旧消息
-//  3. 重置 session（AP 框架 Session 没有公开的 AddMessage，下一轮 agent.Run
-//     实际不读 session.History；摘要结果已通过 tui 反馈给用户并被缓存到 historyCopy）
+//  3. 将压缩结果存入 a.compressedHistory，下一轮 Process/StreamProcess
+//     会自动注入到用户消息前缀中，然后清空
+//  4. 重置 session（AP 框架 Session 没有公开的 AddMessage）
 //
 // 失败降级：返回错误，由调用方决定是否回退到 ClearContext。
 func (a *CodecastAgent) SummarizeContext(ctx context.Context) error {
@@ -228,8 +261,11 @@ func (a *CodecastAgent) SummarizeContext(ctx context.Context) error {
 		}
 	}
 
-	// AP 框架 Session 没有公开的 AddMessage；下一轮 agent.Run 不读 session.History。
-	// 因此 Reset 等价于"清空本地的 history 引用"（仅供 History() 消费者使用）。
+	// 存储压缩后的消息，下一轮 Process/StreamProcess 会注入到用户消息前缀中
+	a.compressedHistory = compressed
+
+	// 重置 session（AP 框架 Session 没有公开的 AddMessage）。
+	// 摘要上下文已存入 compressedHistory，不会丢失。
 	a.session.Reset()
 
 	return nil
