@@ -11,11 +11,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
 	ap "agentprimordia/pkg"
 	"codecast/cli/internal/undo"
+	"codecast/cli/internal/util"
 )
 
 // DeleteFileTool 删除指定文件，操作前自动备份到 undo 管理器
@@ -79,7 +78,7 @@ func (t *DeleteFileTool) Execute(ctx context.Context, args json.RawMessage) (*ap
 
 	// 路径安全：拒绝包含 ".." 的相对路径段，防止逃逸出项目根
 	// 同时拒绝以分隔符开头的根路径（如 "/" 或 "C:\"）
-	if hasUnsafePathSegment(params.FilePath) {
+	if util.HasUnsafePathSegment(params.FilePath) {
 		return ap.NewToolErrorResult(fmt.Sprintf("路径不安全: %q 含 \"..\" 段或指向根目录", params.FilePath)), nil
 	}
 
@@ -116,35 +115,4 @@ func (t *DeleteFileTool) Execute(ctx context.Context, args json.RawMessage) (*ap
 		msg = backupWarn + msg
 	}
 	return ap.NewToolResult(msg), nil
-}
-
-// hasUnsafePathSegment 检查路径中是否含 ".." 段，或路径本身就是文件系统根。
-// 用于阻止工具误删系统关键文件：
-//   - 拒绝 ".."，任何含 ".." 段的相对路径都会逃逸出预期目录
-//   - 拒绝 Linux 根 "/" 以及 Windows 驱动器根 "C:\" / "C:/"
-//   - 拒绝 UNC 根 "\\server\share" / "//server/share"
-// 其他绝对路径（如 "C:\Users\me\project\file.txt"）允许：
-// 调用方有责任控制传入的绝对路径在合理范围内。
-func hasUnsafePathSegment(p string) bool {
-	// 拒绝 POSIX 根目录
-	if p == "/" {
-		return true
-	}
-	// 拒绝 Windows 驱动器根（路径必须正好是 "C:\" 或 "C:/"，
-	// 即驱动器盘符后紧跟一个分隔符且无其他内容）。
-	if len(p) == 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/') {
-		return true
-	}
-	// 拒绝 UNC 根：路径以 "\\" 或 "//" 开头
-	if strings.HasPrefix(p, "\\\\") || strings.HasPrefix(p, "//") {
-		return true
-	}
-	// 拒绝任何 ".." 路径段（用 filepath.ToSlash 跨平台统一分隔符再分割）
-	normalized := filepath.ToSlash(p)
-	for _, seg := range strings.Split(normalized, "/") {
-		if seg == ".." {
-			return true
-		}
-	}
-	return false
 }

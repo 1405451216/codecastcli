@@ -20,18 +20,26 @@ const planSystemPrompt = `你是 Codecast PlanAgent — 负责把用户的复杂
 
 每行一个子任务，格式：
 
-  [ID] 任务描述 (依赖: dep1,dep2,...)
+  [ID] 任务描述 (依赖: dep1,dep2,...) (文件: path1,path2,...)
 
 - ID: 1, 2, 3 ... 顺序整数，从 1 开始
 - 描述: 动宾结构，10-50 字，动词开头（"读取" / "分析" / "修改" / "测试"）
 - 依赖: 可选，逗号分隔的 ID 列表；无依赖时省略整个括号
+- 文件: 可选，逗号分隔的文件路径列表；该任务会读写的文件。无文件操作时省略
 
 正确示例（可作为唯一权威格式）：
-  [1] 读取 internal/agent/agent.go 的 buildSystemPrompt 函数
+  [1] 读取 internal/agent/agent.go 的 buildSystemPrompt 函数 (文件: internal/agent/agent.go)
   [2] 分析当前提示词的薄弱环节 (依赖: 1)
-  [3] 重写 buildSystemPrompt 注入反模式段 (依赖: 2)
-  [4] 更新对应的单元测试断言 (依赖: 3)
+  [3] 重写 buildSystemPrompt 注入反模式段 (依赖: 2) (文件: internal/agent/agent.go)
+  [4] 更新对应的单元测试断言 (依赖: 3) (文件: internal/agent/agent_test.go)
   [5] 运行 go test ./internal/agent 验证 (依赖: 4)
+
+=== 并行性标注（重要） ===
+
+- 明确两个任务无数据依赖时，**不要**互相加依赖
+- 涉及**同一文件**的任务必须串行（后任务依赖前任务）
+- 涉及**不同文件**的独立任务应保持无依赖，让编排器自动并行
+- 纯分析/读取类任务若无后续修改依赖，可与其他读取任务并行
 
 === 拆分粒度准则 ===
 

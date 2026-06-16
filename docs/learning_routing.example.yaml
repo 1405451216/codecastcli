@@ -1,0 +1,73 @@
+# Codecast 学习型模型路由配置示例（P1 L2）
+#
+# 启用方式（~/.codecast/config.yaml）：
+#   learning_routing:
+#     enabled: true
+#     epsilon: 0.15          # 探索率（0=纯利用，1=纯探索）
+#     min_samples: 3         # 冷启动期每模型最少采样数
+#     # state_path: ~/.codecast/model_routing_state.json  # 可选，默认即此
+#     candidate_models:
+#       simple: [gpt-4o-mini, gemini-flash, deepseek-chat]
+#       medium: [gpt-4o, claude-sonnet]
+#       complex: [claude-opus, o1-preview]
+#
+# 工作原理：
+#   1. L1 规则（ClassifyTier）决定档位：simple / medium / complex
+#      - refactor/architecture 意图 → complex
+#      - 多步骤 + 长输入 → complex
+#      - question 意图 + 短输入 + 无文件引用 → simple
+#      - 其他 → medium
+#   2. L2 在同档位候选模型中用 epsilon-greedy + Wilson CI 收敛
+#      - 冷启动期（samples < min_samples）优先选采样最少的模型
+#      - epsilon 概率随机探索
+#      - 否则选评分最高的（利用）
+#   3. 评分公式：(1/avgCost) * (0.5 + successRate*0.5)
+#      成本越低、成功率越高，分越高
+#
+# 不配置 candidate_models 的档位会退化为 L0 单一模型（routing.simple_model 等）。
+# 完全不启用 learning_routing 时，行为与之前一致（纯 L0 规则路由）。
+
+enabled: false  # 默认禁用，显式启用
+
+# 探索率：0=纯利用（总选最优），1=纯探索（总随机）。推荐 0.15
+epsilon: 0.15
+
+# 冷启动期每模型最少采样数。推荐 3
+# 此期间优先选采样最少的模型，保证每个模型都有数据
+min_samples: 3
+
+# 状态文件路径（默认 ~/.codecast/model_routing_state.json）
+# state_path: ~/.codecast/model_routing_state.json
+
+# 每个档位的候选模型列表。
+# 同档位多模型时，L2 会自动学习最优模型。
+# 未配置的档位退化为 L0 单一模型（routing 配置中的 simple_model/medium_model/complex_model）。
+candidate_models:
+  # 简单任务候选（问答、短输入）
+  simple:
+    - gpt-4o-mini
+    - gemini-1.5-flash
+    - deepseek-chat
+
+  # 中等任务候选（单点修改、普通编辑）
+  medium:
+    - gpt-4o
+    - claude-3-5-sonnet
+    - deepseek-coder
+
+  # 复杂任务候选（重构、架构、多步骤）
+  complex:
+    - claude-3-opus
+    - o1-preview
+    - gpt-4o
+
+# ===== 配合 L0 路由配置（routing）使用 =====
+# L0 配置（~/.codecast/config.yaml）：
+#   routing:
+#     enabled: true
+#     simple_model: gpt-4o-mini
+#     medium_model: gpt-4o
+#     complex_model: claude-opus
+#
+# 当 learning_routing.enabled=true 时，L2 优先于 L0。
+# 当 learning_routing.candidate_models 未配置某档位时，该档位退化为 L0。

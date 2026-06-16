@@ -87,7 +87,12 @@ func ConfirmPrompt(toolName, args string) ConfirmResult {
 	}
 }
 
-// HandleInterrupt 处理中断请求，在终端显示确认提示并返回响应
+// HandleInterrupt 处理中断请求，在终端显示确认提示并返回响应。
+//
+// F-11 修复：在显示 ConfirmPrompt 之前，先通过 HITLManagerWrapper 记录
+// pending 请求，使 HITL 状态与实际确认流程一致。TUI 或远程交互层
+// 可通过 HitlManager().PendingRequest() 读取挂起请求并自行渲染确认 UI，
+// 然后通过 SendResponse() 发回响应（此时 ConfirmPrompt 不会被调用）。
 func HandleInterrupt(mgr *Manager, req *InterruptRequest) (*HumanResponse, bool) {
 	toolName := ""
 	args := ""
@@ -104,7 +109,21 @@ func HandleInterrupt(mgr *Manager, req *InterruptRequest) (*HumanResponse, bool)
 		return &HumanResponse{Approved: false}, false
 	}
 
+	// F-11: 通知 HITLManagerWrapper 有挂起的中断请求
+	if wrapper := mgr.HitlManager(); wrapper != nil {
+		wrapper.mu.Lock()
+		wrapper.pending = req
+		wrapper.mu.Unlock()
+	}
+
 	result := ConfirmPrompt(toolName, args)
+
+	// F-11: 清除 pending 状态
+	if wrapper := mgr.HitlManager(); wrapper != nil {
+		wrapper.mu.Lock()
+		wrapper.pending = nil
+		wrapper.mu.Unlock()
+	}
 
 	switch result.Action {
 	case ActionAllow:

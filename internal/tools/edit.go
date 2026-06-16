@@ -78,6 +78,20 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (*ap.T
 		return ap.NewToolErrorResult("old_string 不能为空"), nil
 	}
 
+	// S-04 修复：路径遍历防护
+	if util.HasUnsafePathSegment(params.FilePath) {
+		return ap.NewToolErrorResult(fmt.Sprintf("路径不安全: %q 含 \"..\" 段或指向根目录", params.FilePath)), nil
+	}
+
+	// Critical 修复：使用 Lstat 检查符号链接，防止符号链接重定向攻击
+	linfo, err := os.Lstat(params.FilePath)
+	if err != nil {
+		return ap.NewToolErrorResult(fmt.Sprintf("获取文件信息失败: %v", err)), nil
+	}
+	if linfo.Mode()&os.ModeSymlink != 0 {
+		return ap.NewToolErrorResult(fmt.Sprintf("拒绝编辑符号链接: %q，请编辑其指向的实际文件", params.FilePath)), nil
+	}
+
 	// 获取文件信息（保留原始权限）
 	info, err := os.Stat(params.FilePath)
 	if err != nil {
@@ -108,6 +122,27 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (*ap.T
 		params.OldString = findClosestMatch(original, params.OldString)
 		if params.OldString == "" {
 			return ap.NewToolErrorResult(fmt.Sprintf("未找到匹配的文本: %q", util.Truncate(params.OldString, 50))), nil
+		}
+	}
+
+	// Fuzzy 匹配层：严格匹配和空白容差都失败时，用 Levenshtein 行级相似度
+	// 找最近候选。置信度 > FuzzyMatchThreshold 自动应用，否则返回错误并提示候选。
+	// 这是 Edit L1 改进：减少 LLM 缩进漂移/小笔误导致的匹配失败。
+	if count == 0 {
+		fz := fuzzyMatchLines(original, params.OldString)
+		if fz.Confidence >= FuzzyMatchThreshold {
+			// 自动应用：用 fuzzy 匹配到的原文子串作为 old_string
+			count = 1
+			params.OldString = fz.Matched
+		} else if fz.Confidence > 0 {
+			// 有候选但置信度不足，提示用户
+			return ap.NewToolErrorResult(fmt.Sprintf(
+				"未找到精确匹配。最相似候选在第 %d 行，置信度 %.2f（阈值 %.2f）。\n"+
+					"候选片段:\n%s\n"+
+					"如需应用，请提供更精确的 old_string，或调整缩进/空白后重试。",
+				fz.StartLine, fz.Confidence, FuzzyMatchThreshold,
+				util.Truncate(fz.Matched, 200),
+			)), nil
 		}
 	}
 
@@ -142,7 +177,10 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (*ap.T
 	}
 	if err := os.Rename(tmpFile, params.FilePath); err != nil {
 		os.Remove(tmpFile)
-		return ap.NewToolErrorResult(fmt.Sprintf("重命名文件失败: %v", err)), nil
+		// C-02 修复：Windows 上 Rename 可能因文件锁定失败，回退到覆盖写入
+		if writeErr := overwriteFile(params.FilePath, []byte(newContent), info.Mode()); writeErr != nil {
+			return ap.NewToolErrorResult(fmt.Sprintf("重命名和覆盖均失败: rename=%v overwrite=%v", err, writeErr)), nil
+		}
 	}
 
 	// 生成 diff 摘要
@@ -241,6 +279,23 @@ func findClosestMatch(original, old string) string {
 		}
 	}
 	return original[tOrig:endOrig]
+}
+
+// overwriteFile 直接覆盖写入文件内容（C-02 修复：Windows 上 os.Rename
+// 可能因目标文件被锁定而失败时的回退方案）。
+// 先截断文件再写入，确保原子性（最坏情况下文件被截断但写入失败，
+// 但 multi_edit 的回滚机制会恢复原文）。
+func overwriteFile(path string, data []byte, mode os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return fmt.Errorf("打开文件失败: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("写入文件失败: %w", err)
+	}
+	return nil
 }
 
 

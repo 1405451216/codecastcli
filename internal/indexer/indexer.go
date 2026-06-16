@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"codecast/cli/internal/util"
 )
 
 // FileEntry 文件条目
@@ -54,6 +55,7 @@ type Indexer struct {
 	ignoreExts map[string]bool
 	watcher    *fsnotify.Watcher
 	done       chan struct{}
+	stopOnce   sync.Once // R5-C2 修复：防止 Stop() 重复关闭 channel
 }
 
 // NewIndexer 创建索引器
@@ -91,9 +93,27 @@ func (idx *Indexer) Build() error {
 }
 
 // BuildWithCallback 构建索引，每个文件处理完后调用 cb(path)（F-07 配套）。
-// cb 为 nil 时等价于 Build()。回调在锁外执行。
-// 使用显式 Lock/Unlock 而非 defer，因为 callback 需要临时释放锁。
+// cb 为 nil 时等价于 Build()。
+// P-01 修复：使用 channel 模式替代 Unlock/Lock 间隙，消除竞态条件。
+// Walk 在主 goroutine 中持锁收集条目，通过 channel 发送进度给 callback goroutine。
 func (idx *Indexer) BuildWithCallback(cb func(path string)) error {
+	// P-01 修复：如果需要 callback，启动独立 goroutine 消费进度
+	var progressCh chan string
+	if cb != nil {
+		progressCh = make(chan string, 64)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for path := range progressCh {
+				cb(path)
+			}
+		}()
+		defer func() {
+			close(progressCh)
+			<-done
+		}()
+	}
+
 	idx.mu.Lock()
 
 	// 重置索引
@@ -135,17 +155,16 @@ func (idx *Indexer) BuildWithCallback(cb func(path string)) error {
 			IsDir:    false,
 		}
 
-		// 提取代码标签（轻量，始终执行）
+		// P-02 修复：只读一次文件内容，同时用于 extractTags 和 extractDependencies
 		if info.Size() < 500*1024 { // 500KB 以下
 			data, err := os.ReadFile(path)
 			if err == nil {
 				entry.Tags = extractTags(path, data, entry.Language)
+				// 依赖提取限制在 100KB 以下
+				if info.Size() < 100*1024 {
+					idx.extractDependenciesFromData(string(data), entry)
+				}
 			}
-		}
-
-		// 提取依赖信息（较重，限制文件大小）
-		if info.Size() < 100*1024 { // 100KB 以下
-			idx.extractDependencies(path, entry)
 		}
 
 		idx.index.Files[relPath] = entry
@@ -156,16 +175,9 @@ func (idx *Indexer) BuildWithCallback(cb func(path string)) error {
 			idx.index.Languages[entry.Language]++
 		}
 
-		// F-07 配套：把回调放到锁外执行 — 简化方案是直接调用，
-		// 大量小文件场景下 callback 仍可能慢；如需更高吞吐可改 channel 模式。
-		if cb != nil {
-			idx.mu.Unlock()
-			cb(relPath)
-			idx.mu.Lock()
-			if idx.index == nil {
-				// 回调可能调用了 Rebuild；不要继续修改旧 index
-				return filepath.SkipAll
-			}
+		// P-01 修复：通过 channel 发送进度，不再临时释放锁
+		if progressCh != nil {
+			progressCh <- relPath
 		}
 
 		return nil
@@ -180,7 +192,11 @@ func (idx *Indexer) BuildWithCallback(cb func(path string)) error {
 	idx.mu.Unlock()
 
 	// 构建完成后保存缓存
-	_ = idx.saveCache()
+	// L-03 修复：缓存保存失败时记录警告而非静默忽略
+	if err := idx.saveCache(); err != nil {
+		// 缓存失败不影响索引功能，仅记录
+		fmt.Fprintf(os.Stderr, "⚠ 索引缓存保存失败: %v\n", err)
+	}
 
 	return nil
 }
@@ -329,11 +345,16 @@ func (idx *Indexer) GetContextForFile(filePath string) string {
 		}
 	}
 
-	// 依赖此文件的文件
-	dependents := idx.GetDependents(filePath)
-	if len(dependents) > 0 {
+	// COR-06 修复：内联 GetDependents 逻辑，避免递归 RLock 死锁
+	var deps []Dependency
+	for _, dep := range idx.index.Dependencies {
+		if dep.To == filePath {
+			deps = append(deps, dep)
+		}
+	}
+	if len(deps) > 0 {
 		sb.WriteString("被引用:\n")
-		for _, dep := range dependents {
+		for _, dep := range deps {
 			sb.WriteString(fmt.Sprintf("  - %s\n", dep.From))
 		}
 	}
@@ -354,14 +375,17 @@ func (idx *Indexer) shouldIgnoreDir(relPath string) bool {
 	return false
 }
 
-// extractDependencies 提取文件依赖
+// extractDependencies 提取文件依赖（从文件读取）
 func (idx *Indexer) extractDependencies(path string, entry *FileEntry) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
-	content := string(data)
+	idx.extractDependenciesFromData(string(data), entry)
+}
 
+// extractDependenciesFromData 从已读取的内容中提取依赖（P-02 修复：避免重复读文件）
+func (idx *Indexer) extractDependenciesFromData(content string, entry *FileEntry) {
 	switch entry.Language {
 	case "go":
 		idx.extractGoDeps(content, entry)
@@ -372,11 +396,20 @@ func (idx *Indexer) extractDependencies(path string, entry *FileEntry) {
 	}
 }
 
+// M-02 修复：将正则表达式提升为包级变量，避免每次调用重复编译
+var (
+	goImportRe    = regexp.MustCompile(`import\s+(?:"([^"]+)"|[\(]([\s\S]*?)[\)])`)
+	goExportRe    = regexp.MustCompile(`(?:func|type|var|const)\s+([A-Z]\w+)`)
+	pyImportRe    = regexp.MustCompile(`(?:import|from)\s+([a-zA-Z_][\w.]*)`)
+	pyDefRe       = regexp.MustCompile(`(?:class|def)\s+(\w+)`)
+	jsImportRe    = regexp.MustCompile(`(?:import|require)\s*\(?\s*['"]([^'"]+)['"]`)
+	jsExportRe    = regexp.MustCompile(`export\s+(?:default\s+)?(?:function|class|const|let|var)\s+(\w+)`)
+)
+
 // extractGoDeps 提取 Go 依赖
 func (idx *Indexer) extractGoDeps(content string, entry *FileEntry) {
 	// 匹配 import 语句
-	importRe := regexp.MustCompile(`import\s+(?:"([^"]+)"|[\(]([\s\S]*?)[\)])`)
-	matches := importRe.FindAllStringSubmatch(content, -1)
+	matches := goImportRe.FindAllStringSubmatch(content, -1)
 	for _, m := range matches {
 		if m[1] != "" {
 			entry.Imports = append(entry.Imports, m[1])
@@ -395,8 +428,7 @@ func (idx *Indexer) extractGoDeps(content string, entry *FileEntry) {
 	}
 
 	// 匹配导出函数/类型
-	exportRe := regexp.MustCompile(`(?:func|type|var|const)\s+([A-Z]\w+)`)
-	exportMatches := exportRe.FindAllStringSubmatch(content, -1)
+	exportMatches := goExportRe.FindAllStringSubmatch(content, -1)
 	for _, m := range exportMatches {
 		entry.Exports = append(entry.Exports, m[1])
 	}
@@ -404,15 +436,13 @@ func (idx *Indexer) extractGoDeps(content string, entry *FileEntry) {
 
 // extractPythonDeps 提取 Python 依赖
 func (idx *Indexer) extractPythonDeps(content string, entry *FileEntry) {
-	importRe := regexp.MustCompile(`(?:import|from)\s+([a-zA-Z_][\w.]*)`)
-	matches := importRe.FindAllStringSubmatch(content, -1)
+	matches := pyImportRe.FindAllStringSubmatch(content, -1)
 	for _, m := range matches {
 		entry.Imports = append(entry.Imports, m[1])
 	}
 
 	// 匹配类和函数定义
-	defRe := regexp.MustCompile(`(?:class|def)\s+(\w+)`)
-	defMatches := defRe.FindAllStringSubmatch(content, -1)
+	defMatches := pyDefRe.FindAllStringSubmatch(content, -1)
 	for _, m := range defMatches {
 		if !strings.HasPrefix(m[1], "_") {
 			entry.Exports = append(entry.Exports, m[1])
@@ -423,15 +453,13 @@ func (idx *Indexer) extractPythonDeps(content string, entry *FileEntry) {
 // extractJSDeps 提取 JS/TS 依赖
 func (idx *Indexer) extractJSDeps(content string, entry *FileEntry) {
 	// import 语句
-	importRe := regexp.MustCompile(`(?:import|require)\s*\(?\s*['"]([^'"]+)['"]`)
-	matches := importRe.FindAllStringSubmatch(content, -1)
+	matches := jsImportRe.FindAllStringSubmatch(content, -1)
 	for _, m := range matches {
 		entry.Imports = append(entry.Imports, m[1])
 	}
 
 	// export 语句
-	exportRe := regexp.MustCompile(`export\s+(?:default\s+)?(?:function|class|const|let|var)\s+(\w+)`)
-	exportMatches := exportRe.FindAllStringSubmatch(content, -1)
+	exportMatches := jsExportRe.FindAllStringSubmatch(content, -1)
 	for _, m := range exportMatches {
 		entry.Exports = append(entry.Exports, m[1])
 	}
@@ -499,21 +527,7 @@ func detectLanguage(ext string) string {
 	}
 }
 
-// FormatSize 格式化文件大小
+// FormatSize 格式化文件大小（M-05：委托给 util.FormatSize）
 func FormatSize(size int64) string {
-	const (
-		KB = 1024
-		MB = 1024 * KB
-		GB = 1024 * MB
-	)
-	switch {
-	case size >= GB:
-		return fmt.Sprintf("%.1f GB", float64(size)/float64(GB))
-	case size >= MB:
-		return fmt.Sprintf("%.1f MB", float64(size)/float64(MB))
-	case size >= KB:
-		return fmt.Sprintf("%.1f KB", float64(size)/float64(KB))
-	default:
-		return fmt.Sprintf("%d B", size)
-	}
+	return util.FormatSize(size)
 }

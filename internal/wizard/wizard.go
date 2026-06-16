@@ -16,17 +16,19 @@ type Config struct {
 	SafeMode       bool
 }
 
-// ProviderModels maps each provider name to a list of recommended models.
+// ProviderModels maps each provider name to a list of recommended models（截至 2026 年 6 月最新，已联网验证）
 var ProviderModels = map[string][]string{
-	"openai":    {"gpt-4o", "gpt-4o-mini", "o3"},
+	"openai":    {"gpt-5.4", "gpt-5.4-pro", "gpt-5.5-instant"},
 	"anthropic": {"claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-3-5-20241022"},
-	"gemini":    {"gemini-2.5-pro", "gemini-2.5-flash"},
-	"deepseek":  {"deepseek-chat", "deepseek-reasoner"},
-	"qwen":      {"qwen-max", "qwen-plus"},
-	"glm":       {"glm-4-plus"},
-	"ollama":    {"llama3", "codellama", "mistral"},
+	"gemini":    {"gemini-3-flash", "gemini-3-pro"},
+	"deepseek":  {"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3"},
+	"qwen":      {"qwen3.7-max", "qwen3.7-plus"},
+	"glm":       {"glm-5.2", "glm-5v-turbo"},
+	"mimo":      {"mimo-v2.5-pro"},
+	"ollama":    {"qwen3:32b", "qwen3:14b", "deepseek-r1:14b", "llama3.3:70b"},
 	"cohere":    {"command-r-plus"},
 	"mistral":   {"mistral-large-latest"},
+	"local":     {"local-default"},
 }
 
 // Providers returns the sorted list of all provider names.
@@ -52,17 +54,22 @@ func RunWizard() (*Config, error) {
 	fmt.Println("╚══════════════════════════════════════╝")
 	fmt.Println()
 
-	// Step 1: API Key
-	apiKey, err := ReadHiddenInput("API Key: ")
-	if err != nil {
-		return nil, fmt.Errorf("reading API key: %w", err)
-	}
-	fmt.Println()
-
-	// Step 2: Provider
+	// Step 1: Provider（先选 Provider，因为 Ollama 不需要 API Key）
 	provider, err := SelectOption("Select your provider:", Providers())
 	if err != nil {
 		return nil, fmt.Errorf("selecting provider: %w", err)
+	}
+	fmt.Println()
+
+	// Step 2: API Key（Ollama 等本地模型可跳过）
+	var apiKey string
+	if provider == "ollama" {
+		fmt.Println("  Ollama 是本地模型，无需 API Key，跳过。")
+	} else {
+		apiKey, err = ReadHiddenInput("API Key: ")
+		if err != nil {
+			return nil, fmt.Errorf("reading API key: %w", err)
+		}
 	}
 	fmt.Println()
 

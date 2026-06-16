@@ -183,9 +183,14 @@ func runExec(cmd *cobra.Command, args []string) error {
 	// 信号处理
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	// High 修复：使用 context 控制 goroutine 生命周期，防止泄漏
 	go func() {
-		<-sigCh
-		cancel()
+		select {
+		case <-sigCh:
+			cancel()
+		case <-ctx.Done():
+			// context 已取消，退出 goroutine
+		}
 	}()
 
 	// 执行

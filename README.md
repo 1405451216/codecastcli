@@ -2,7 +2,7 @@
 
 ![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat-square&logo=go)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
-![Version](https://img.shields.io/badge/Version-0.4.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-1.0.0-blue?style=flat-square)
 
 基于 [AgentPrimordia](https://github.com/agentprimordia) 框架的 AI 终端 Agent 工具，支持多 LLM Provider、智能代码理解、三级权限模型、Plan+Execute 双 Agent 协作等企业级特性。
 
@@ -13,16 +13,19 @@
 - 🌳 **tree-sitter AST 解析** — Go/Python/JavaScript/TypeScript 精确语法分析，提取函数、类、变量等符号
 - 🔌 **LSP 语言服务集成** — gopls / pyright / tsserver 深度集成，提供定义跳转、引用查找
 - 🫖 **Bubble Tea TUI** — 基于 Bubble Tea 的现代化终端 UI，支持流式渲染、Spinner、进度条
-- 🤖 **隔离子 Agent 并行** — Plan+Execute 双 Agent DAG 编排，每个子任务独立内存，互不干扰
+- 🤖 **子 Agent 自动并行编排** — Plan+Execute DAG 编排，自动检测文件冲突决定并行/串行，无冲突任务自动并行
 - 📁 **@file 智能引用** — 输入 @<path> 自动展开文件内容，支持语言检测、截断、补全
 - 🔐 **三级权限模型** — `suggest`（建议）/ `auto-edit`（自动编辑）/ `full-auto`（全自动），精细控制工具调用审批
 - 📺 **流式 Markdown 实时渲染** — 基于 Glamour 的高质量终端 Markdown 渲染
-- 🤝 **Plan+Execute 双 Agent 协作** — 规划 Agent 制定方案，执行 Agent 落地实现
+- ✏️ **模糊编辑（Fuzzy Edit）** — Levenshtein 距离模糊匹配，容忍缩进/空白差异，置信度 > 0.85 自动应用
 - 🔄 **自动 Git Checkpoint + Undo 回滚** — 文件修改前自动创建检查点，支持一键撤销
 - 🌿 **Git-Aware AI** — 自动注入 blame、diff、commit 历史，让 AI 理解代码演变上下文
-- 🔀 **智能模型路由** — 根据输入复杂度自动选择 Simple/Medium/Complex 模型，节省成本
+- 🔀 **智能模型路由（L1+L2）** — L1 特征分类 + L2 Wilson 置信区间学习路由器，根据历史成功率自适应优化
+- 🔍 **代码库语义索引** — tree-sitter 符号切块 + embedding 向量检索 + BM25 关键词检索混合融合
+- 📊 **基准测试框架** — 15 个内置任务（5 类型 × 3 难度），量化评估配置表现
 - 🔌 **MCP 协议扩展** — 10+ 内置模板（filesystem / github / postgres / puppeteer 等）
 - 💰 **成本预算控制** — 每日/每会话预算上限，Token 用量追踪，超限自动中断
+- 🇨🇳 **国内 Embedding Provider** — 智谱（Zhipu）/ 通义（DashScope）OpenAI 兼容接口
 - 🏗️ **多平台分发** — goreleaser 支持 Linux/macOS/Windows 多架构，提供 Homebrew/Scoop/DEB/RPM
 - 🧩 **插件生态系统** — 可扩展的插件注册与管理机制
 
@@ -81,6 +84,8 @@ codecast exec "解释这个项目的架构"
 | `/model <id>` | 切换模型 |
 | `/plan <task>` | 规划任务 |
 | `/delegate <task>` | 双 Agent 协作 |
+| `/subagent <task>` | 子 Agent 自动并行编排（v1.0+，自动检测文件冲突） |
+| `/dag` | 查看当前 DAG 可视化（v1.0+） |
 | `/undo` | 撤销最近修改 |
 | `/budget` | 查看预算 |
 | `/rules` | 查看项目规则 |
@@ -94,7 +99,9 @@ codecast exec "解释这个项目的架构"
 | `/blame <file> [line]` | 查看文件 Git Blame 信息 |
 | `/history <file>` | 查看文件修改历史 |
 | `/diff [branch]` | 查看当前代码变更 |
-| `/route [on\|off\|test]` | 智能模型路由管理 |
+| `/route [on\|off\|test\|stats\|reset]` | 智能模型路由管理（v1.0+ 增加学习路由器） |
+| `/semantic [index\|query\|stats\|clear]` | 代码库语义索引（v1.0+，embedding+BM25 混合检索） |
+| `/benchmark [run\|list]` | 基准测试（v1.0+，15 任务量化评估） |
 | `/prompt [list\|use\|show\|current\|reload]` | 提示词变体管理 |
 | `/ab [enable\|disable\|reset\|suggest\|apply\|epsilon]` | A/B 自动收敛管理（带 Wilson 95% CI + 显著性检验 + HTML 导出） |
 | `/fb [y\|n\|show\|enable\|disable]` | 主动反馈 A/B 评估（撤销会自动联动） |
@@ -119,6 +126,39 @@ codecast exec "解释这个项目的架构"
 | `session_budget_usd` | float | `0` | 每会话预算上限（USD） |
 | `daily_token_limit` | int | `0` | 每日 Token 上限 |
 | `session_token_limit` | int | `0` | 每会话 Token 上限 |
+
+### 语义索引配置（v1.0+）
+
+```yaml
+semantic_index:
+  enabled: true
+  embedding_provider: zhipu          # openai / zhipu / dashscope / mock
+  embedding_api_key: "your-key"      # 为空则复用主 api_key
+  embedding_base_url: ""             # 为空则用 provider 默认值
+  embedding_model: embedding-3       # 智谱默认；通义用 text-embedding-v3
+  max_chunk_lines: 100
+  state_path: ~/.codecast/semantic_index.json
+```
+
+**Embedding Provider 选择**：
+- `openai`: text-embedding-3-small（1536 维，$0.02/1M tokens）
+- `zhipu`: 智谱 embedding-3（2048 维，国内访问快）
+- `dashscope`: 通义 text-embedding-v3（1024 维，阿里云百炼）
+- `mock`: 测试用，字符哈希生成向量，无网络依赖
+
+完整示例见 [docs/semantic_index.example.yaml](docs/semantic_index.example.yaml)。
+
+### 学习型路由配置（v1.0+）
+
+```yaml
+learning_routing:
+  enabled: true
+  epsilon: 0.1                       # 探索比例（0.1 = 10% 探索新选择）
+  min_samples: 10                    # 最小样本数才开始学习
+  state_path: ~/.codecast/learning_router.json
+```
+
+启用后系统会根据历史成功率自适应选择模型，Wilson 置信区间评估每个模型的质量。
 
 ## 命令行 Flags
 
@@ -326,6 +366,7 @@ codecastcli/
 ├── cmd/                        # Cobra 命令定义
 │   ├── root.go                 # 根命令 & 全局 Flags
 │   ├── interactive.go          # 交互式 REPL
+│   ├── interactive_commands.go # 斜杠命令处理（含 /semantic /benchmark）
 │   ├── config.go               # 配置管理
 │   ├── exec.go                 # Headless 模式
 │   ├── mcp.go                  # MCP 子命令
@@ -337,17 +378,24 @@ codecastcli/
 │   ├── pool.go                 # Agent Pool
 │   ├── workflow.go             # 工作流
 │   ├── chat.go                 # 聊天模式
+│   ├── feedback.go             # /fb A/B 反馈命令
 │   └── init.go                 # 项目初始化
 ├── internal/                   # 核心实现
 │   ├── agent/                  # Agent 主循环 & 流式处理
+│   ├── ab/                     # 提示词 A/B 收敛器（Wilson CI）
+│   ├── benchmark/              # 基准测试框架（v1.0+）
 │   ├── budget/                 # 预算控制器
 │   ├── checkpoint/             # Git 检查点管理
+│   ├── commands/               # 命令加载器
 │   ├── config/                 # 配置加载与持久化
 │   ├── context/                # 上下文压缩
 │   ├── cost/                   # Token 成本追踪
 │   ├── diff/                   # Diff 预览
+│   ├── errors/                 # 错误类型
 │   ├── hooks/                  # 钩子管理器
-│   ├── indexer/                # 代码库索引器
+│   ├── indexer/                # 代码库索引器（含 tree-sitter）
+│   ├── lazy/                   # 懒加载器
+│   ├── logx/                   # 日志扩展
 │   ├── mcp/                    # MCP 模板定义
 │   ├── mcpcfg/                 # MCP 配置管理
 │   ├── memory/                 # 自动记忆持久化
@@ -356,15 +404,19 @@ codecastcli/
 │   ├── plugin/                 # 插件注册与管理
 │   ├── pool/                   # Agent Pool 管理
 │   ├── profile/                # Profile 管理
+│   ├── promptab/               # 提示词 A/B 框架
 │   ├── provider/               # LLM Provider 工厂
+│   ├── routing/                # 模型路由（L1 特征 + L2 学习路由器，v1.0+）
 │   ├── rules/                  # 项目规则加载
 │   ├── sandbox/                # 沙箱执行器
+│   ├── semantic/               # 代码库语义索引（v1.0+，embedding+BM25）
 │   ├── session/                # 会话存储
-│   ├── subagent/               # 双 Agent 编排器
-│   ├── tools/                  # 内置工具（edit/glob/grep）
+│   ├── subagent/               # 子 Agent 编排（自动并行 DAG，v1.0+）
+│   ├── tools/                  # 内置工具（edit/glob/grep/fuzzy，v1.0+ 模糊编辑）
 │   ├── tui/                    # TUI 渲染器
 │   ├── ui/                     # UI 辅助（Markdown/Spinner）
 │   ├── undo/                   # 撤销管理器
+│   ├── version/                # 版本信息（v1.0.0）
 │   ├── vision/                 # 图片分析 & 截图
 │   └── wizard/                 # 交互式配置向导
 ├── completions/                # Shell 补全脚本
@@ -372,7 +424,15 @@ codecastcli/
 │   ├── codecast.zsh
 │   ├── codecast.fish
 │   └── codecast.ps1
-└── docs/                       # 文档
+├── docs/                       # 文档
+│   ├── tutorials/              # 教程
+│   ├── trial-guide.md          # 试用指南（v1.0+）
+│   ├── trial-feedback.md       # 反馈模板（v1.0+）
+│   ├── semantic_index.example.yaml
+│   ├── routing.example.yaml
+│   └── learning_routing.example.yaml
+├── CHANGELOG.md                # 变更日志
+└── RELEASE-NOTES-v1.0.0.md     # v1.0 发布说明
 ```
 
 ## 开发

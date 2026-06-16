@@ -143,7 +143,8 @@ func (m *Manager) StartServer(language string) error {
 		return fmt.Errorf("不支持的语言: %q（支持: go, python, typescript）", language)
 	}
 
-	// 检查服务器是否已在运行
+	// R5-C9 修复：双重检查锁定，防止 TOCTOU 竞态导致重复启动 LSP 进程
+	// 第一次检查（快速路径）
 	m.mu.RLock()
 	if srv, exists := m.servers[lang]; exists && srv.Running {
 		m.mu.RUnlock()
@@ -197,7 +198,16 @@ func (m *Manager) StartServer(language string) error {
 	}
 	srv.client = client
 
+	// 第二次检查 + 注册（写锁），防止并发重复启动
 	m.mu.Lock()
+	if existing, exists := m.servers[lang]; exists && existing.Running {
+		// 另一个 goroutine 已经启动了，清理当前进程
+		m.mu.Unlock()
+		_ = client.Shutdown()
+		client.Stop()
+		_ = cmd.Process.Kill()
+		return nil
+	}
 	m.servers[lang] = srv
 	m.mu.Unlock()
 

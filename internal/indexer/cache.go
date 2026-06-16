@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -17,17 +18,17 @@ const IndexVersion = "1.0"
 
 // CachedFile 缓存的文件条目
 type CachedFile struct {
-	Path     string    `json:"path"`
-	ModTime  time.Time `json:"mod_time"`
-	Size     int64     `json:"size"`
-	Hash     string    `json:"hash"`
+	Path      string     `json:"path"`
+	ModTime   time.Time  `json:"mod_time"`
+	Size      int64      `json:"size"`
+	Hash      string     `json:"hash"`
 	FileEntry *FileEntry `json:"file_entry"`
 }
 
 // CachedIndex 可序列化的索引缓存
 type CachedIndex struct {
-	Version   string               `json:"version"`
-	IndexedAt time.Time            `json:"indexed_at"`
+	Version   string                 `json:"version"`
+	IndexedAt time.Time              `json:"indexed_at"`
 	Files     map[string]*CachedFile `json:"files"`
 }
 
@@ -139,9 +140,17 @@ func (idx *Indexer) BuildOrLoad() error {
 
 // startIncrementalUpdate 初始化 fsnotify watcher 并启动后台增量更新 goroutine
 func (idx *Indexer) startIncrementalUpdate(cached *CachedIndex) {
+	// R5-C3 修复：关闭旧 watcher，防止 goroutine 泄漏
+	if idx.watcher != nil {
+		_ = idx.watcher.Close()
+	}
+	// R5-C3 修复：重新创建 done channel（Stop() 后 channel 可能已关闭）
+	idx.done = make(chan struct{})
+	// 重置 stopOnce，确保后续 Stop() 调用能正常执行清理
+	idx.stopOnce = sync.Once{}
+
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		// watcher 创建失败不影响主流程
 		return
 	}
 	idx.watcher = watcher
@@ -377,13 +386,16 @@ func (idx *Indexer) recalcStats() {
 }
 
 // Stop 停止增量更新并清理 watcher
+// R5-C2 修复：使用 sync.Once 防止重复关闭 channel 导致 panic
 func (idx *Indexer) Stop() {
-	if idx.done != nil {
-		close(idx.done)
-	}
-	if idx.watcher != nil {
-		_ = idx.watcher.Close()
-	}
+	idx.stopOnce.Do(func() {
+		if idx.done != nil {
+			close(idx.done)
+		}
+		if idx.watcher != nil {
+			_ = idx.watcher.Close()
+		}
+	})
 }
 
 // fileHash 计算文件的 MD5 哈希

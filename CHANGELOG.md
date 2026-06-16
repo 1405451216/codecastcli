@@ -5,6 +5,68 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.0] - 2026-06-17
+
+> 首个稳定版本：补齐与世界顶级工具（Aider / Claude Code）的差距
+
+### 新增
+
+- **智能模型路由（L1 + L2）**
+  - L1 特征分类：按请求类型（问答/编辑/重构/调试/多文件）路由到合适模型
+  - L2 学习型路由器：Wilson 置信区间 + epsilon-greedy，根据历史成功率自适应优化
+  - `/route stats` 查看路由统计，`/route reset` 清空学习数据
+  - 路由缓存避免重复决策
+
+- **子 Agent 自动并行编排**
+  - Plan→Execute DAG 编排，自动检测文件冲突决定并行/串行
+  - 无冲突任务自动并行执行，有冲突自动串行
+  - `/subagent "任务"` 手动触发，`/dag` 查看 DAG
+  - 隔离沙箱执行，互不干扰
+
+- **模糊编辑（Fuzzy Edit）**
+  - Levenshtein 距离模糊匹配，容忍缩进/空白差异
+  - 置信度 > 0.85 自动应用，0.6~0.85 询问确认，< 0.6 报错
+  - 告别旧版"少一个空格就失败"的纯字符串替换
+
+- **代码库语义索引（P3）**
+  - tree-sitter 符号切块 + embedding 向量检索 + BM25 关键词检索
+  - 混合检索：向量 0.7 + BM25 0.3 加权融合
+  - 增量更新：文件 modtime 变化时只重算该文件
+  - JSON 持久化，零外部依赖（无 CGO/sqlite-vec）
+  - 支持 OpenAI / 智谱（Zhipu）/ 通义（DashScope）embedding provider
+  - `/semantic index` 建索引，`/semantic query` 检索，`/semantic stats` 统计
+
+- **基准测试框架**
+  - 15 个内置任务（5 类型 × 3 难度）：question / edit / refactor / debug / multi-file
+  - 指标：成功率 / 延迟 / token / 成本 / 工具调用数
+  - Mock Runner 支持 CI 无网络测试
+  - `/benchmark run` 运行，`/benchmark list` 查看任务
+
+- **国内 Embedding Provider 支持**
+  - 智谱（Zhipu）：embedding-3，2048 维，OpenAI 兼容接口
+  - 通义（DashScope）：text-embedding-v3，1024 维，OpenAI 兼容接口
+  - embedding 专用 API Key 和 BaseURL 配置（`embedding_api_key` / `embedding_base_url`）
+
+- **tree-sitter 符号集成到语义索引**
+  - 语义索引按 tree-sitter 提取的函数/类/方法边界切块（替代固定行数切块）
+  - SymbolExtractor 接口解耦 semantic 与 indexer 包，避免循环依赖
+  - 无提取器时自动退化为固定行数切块
+
+- **试用指南与反馈模板**
+  - `docs/trial-guide.md`：6 大新功能体验指南
+  - `docs/trial-feedback.md`：结构化反馈收集模板
+
+### 变更
+
+- 版本号从 0.4.0 升至 1.0.0（首个稳定版）
+- 语义索引配置新增 `embedding_provider: zhipu / dashscope` 选项
+- 语义索引配置新增 `embedding_api_key` / `embedding_base_url` 字段（为空则复用主配置）
+
+### 测试
+
+- 新增 ~30 个测试覆盖路由 / 子 Agent / 模糊编辑 / 语义索引 / 基准测试
+- 全部测试通过：`go test ./internal/... ./cmd/...`
+
 ## [0.4.0] - 2026-06-14
 
 > Phase 2-5 全量交付：从「功能完整」到「生产就绪」

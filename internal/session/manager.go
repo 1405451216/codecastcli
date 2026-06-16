@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"codecast/cli/internal/config"
@@ -26,20 +27,25 @@ type Manager struct {
 	ownsDB bool // 若为 true，Close 时关闭 db；否则只是解引用（F-05）
 }
 
-// sharedDB 进程级的共享 SQLite 连接（F-05 配套）。
-// 由 agent.New() 在启动时设置；其他模块（session.Manager 等）
-// 在 NewManager() 中自动复用。
-//
-// 注意：这只是"尽力而为"的共享；如果 agent 没启动过，sharedDB 仍为 nil。
-var sharedDB *sql.DB
+// C-09 修复：添加全局锁保护 sharedDB 的并发访问
+var (
+	sharedDB   *sql.DB
+	sharedDBMu sync.RWMutex
+)
 
 // SetSharedDB 注入共享 DB（F-05）。通常由 agent.New() 在初始化时调用。
+// C-09 修复：使用写锁保护
 func SetSharedDB(db *sql.DB) {
+	sharedDBMu.Lock()
+	defer sharedDBMu.Unlock()
 	sharedDB = db
 }
 
 // GetSharedDB 返回当前注入的共享 DB，可能为 nil。
+// C-09 修复：使用读锁保护
 func GetSharedDB() *sql.DB {
+	sharedDBMu.RLock()
+	defer sharedDBMu.RUnlock()
 	return sharedDB
 }
 
@@ -49,24 +55,53 @@ func GetSharedDB() *sql.DB {
 // 都没有时才自己打开 ~/.codecast/memory.db。
 func NewManager(db ...*sql.DB) (*Manager, error) {
 	// 优先级：显式参数 > 进程级共享 > 自开
+	var mgr *Manager
 	if len(db) > 0 && db[0] != nil {
-		return &Manager{db: db[0], ownsDB: false}, nil
-	}
-	if sharedDB != nil {
-		return &Manager{db: sharedDB, ownsDB: false}, nil
+		mgr = &Manager{db: db[0], ownsDB: false}
+	} else {
+		// C-09 修复：使用读锁保护 sharedDB 访问
+		sharedDBMu.RLock()
+		shared := sharedDB
+		sharedDBMu.RUnlock()
+		
+		if shared != nil {
+			mgr = &Manager{db: shared, ownsDB: false}
+		} else {
+			configDir := config.GetConfigDir()
+			if err := os.MkdirAll(configDir, 0700); err != nil {
+				return nil, fmt.Errorf("创建配置目录失败: %w", err)
+			}
+
+			dbPath := filepath.Join(configDir, "memory.db")
+			opened, err := sql.Open("sqlite", dbPath)
+			if err != nil {
+				return nil, fmt.Errorf("打开记忆数据库失败: %w", err)
+			}
+			mgr = &Manager{db: opened, ownsDB: true}
+		}
 	}
 
-	configDir := config.GetConfigDir()
-	if err := os.MkdirAll(configDir, 0700); err != nil {
-		return nil, fmt.Errorf("创建配置目录失败: %w", err)
+	// R5-C7 修复：确保 episodes 表存在（session.Manager 独立使用时，AgentPrimordia 可能尚未创建）
+	if err := mgr.ensureSchema(); err != nil {
+		if mgr.ownsDB {
+			mgr.db.Close()
+		}
+		return nil, fmt.Errorf("初始化会话表失败: %w", err)
 	}
+	return mgr, nil
+}
 
-	dbPath := filepath.Join(configDir, "memory.db")
-	opened, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("打开记忆数据库失败: %w", err)
-	}
-	return &Manager{db: opened, ownsDB: true}, nil
+// ensureSchema 确保 episodes 表存在
+func (m *Manager) ensureSchema() error {
+	_, err := m.db.Exec(`CREATE TABLE IF NOT EXISTS episodes (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id TEXT NOT NULL,
+		role TEXT NOT NULL,
+		content TEXT NOT NULL,
+		metadata TEXT DEFAULT '{}',
+		created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`)
+	return err
 }
 
 // List 返回所有会话列表
@@ -80,6 +115,7 @@ func (m *Manager) List() ([]Info, error) {
 		WHERE session_id IS NOT NULL AND session_id != ''
 		GROUP BY session_id
 		ORDER BY updated_at DESC
+		LIMIT 200
 	`)
 	if err != nil {
 		return nil, err
@@ -98,6 +134,9 @@ func (m *Manager) List() ([]Info, error) {
 		// 使用 session_id 作为默认名称
 		s.Name = s.SessionID
 		sessions = append(sessions, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return sessions, nil
 }
@@ -128,6 +167,9 @@ func (m *Manager) GetHistory(sessionID string, limit int) ([]Message, error) {
 		}
 		msg.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
 		msgs = append(msgs, msg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return msgs, nil
 }

@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 
@@ -49,6 +48,30 @@ type Config struct {
 	PromptProjectDir string `yaml:"prompt_project_dir,omitempty"`
 	// 智能模型路由配置
 	Routing routing.RoutingConfig `yaml:"routing,omitempty"`
+	// LearningRouting 学习型模型路由配置（P1 L2）。
+	// 启用后在同档位候选模型中用 epsilon-greedy + Wilson CI 自动收敛。
+	LearningRouting routing.LearningConfig `yaml:"learning_routing,omitempty"`
+	// SemanticIndex 语义索引配置（P3）。
+	// 启用后对代码库做 embedding + BM25 混合检索。
+	SemanticIndex SemanticIndexConfig `yaml:"semantic_index,omitempty"`
+}
+
+// SemanticIndexConfig 语义索引配置
+type SemanticIndexConfig struct {
+	// Enabled 是否启用语义索引
+	Enabled bool `yaml:"enabled"`
+	// EmbeddingProvider embedding 提供方：openai / zhipu / dashscope / mock（测试用）
+	EmbeddingProvider string `yaml:"embedding_provider,omitempty"`
+	// EmbeddingModel embedding 模型名（如 text-embedding-3-small）
+	EmbeddingModel string `yaml:"embedding_model,omitempty"`
+	// EmbeddingAPIKey embedding 专用 API Key（为空则复用主 APIKey）
+	EmbeddingAPIKey string `yaml:"embedding_api_key,omitempty"`
+	// EmbeddingBaseURL embedding 专用 BaseURL（为空则用 provider 默认值）
+	EmbeddingBaseURL string `yaml:"embedding_base_url,omitempty"`
+	// StatePath 索引持久化路径，默认 ~/.codecast/semantic_index.json
+	StatePath string `yaml:"state_path,omitempty"`
+	// MaxChunkLines 单个 chunk 最大行数
+	MaxChunkLines int `yaml:"max_chunk_lines,omitempty"`
 }
 
 // MaskedAPIKey 返回遮蔽后的 API Key（仅显示前4位和后4位）
@@ -77,7 +100,8 @@ func Load() *Config {
 		configPath := filepath.Join(home, ".codecast", "config.yaml")
 		if data, err := os.ReadFile(configPath); err == nil {
 			if err := yaml.Unmarshal(data, cfg); err != nil {
-				log.Printf("警告: 配置文件解析失败: %v", err)
+				// M-03 修复：YAML 解析失败时输出更醒目的警告
+				fmt.Fprintf(os.Stderr, "⚠ 配置文件 %s 解析失败，将使用默认值: %v\n", configPath, err)
 			}
 		}
 	}

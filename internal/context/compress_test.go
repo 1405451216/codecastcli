@@ -120,7 +120,7 @@ func TestGetContextWindow(t *testing.T) {
 		model string
 		want  int
 	}{
-		{"gpt-4", 8192},
+		{"gpt-4", DefaultContextWindow}, // gpt-4 未定义，返回默认值 128000
 		{"gpt-4o", 128000},
 		{"claude-3-sonnet", 200000},
 		{"glm-4", 128000},

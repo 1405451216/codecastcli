@@ -14,7 +14,7 @@ func TestParallelExecutionIsolation(t *testing.T) {
 	// Create 3 isolated memory stores and verify they don't share state
 	stores := make([]ap.Memory, 3)
 	for i := 0; i < 3; i++ {
-		store, err := newIsolatedMemory(fmt.Sprintf("agent%d", i))
+		store, _, err := newIsolatedMemory(fmt.Sprintf("agent%d", i))
 		if err != nil {
 			t.Fatalf("newIsolatedMemory(%d) failed: %v", i, err)
 		}

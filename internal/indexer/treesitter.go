@@ -34,6 +34,37 @@ func extractTags(path string, content []byte, language string) []Tag {
 	return extractTagsRegex(path, content, language)
 }
 
+// ExtractTags 公开导出的符号提取入口。
+// 供 semantic 包等外部调用方使用，避免直接暴露内部 extractTags。
+//
+// 参数：
+//   - path: 文件路径（用于语言推断，若 language 已知可传空）
+//   - content: 文件内容
+//   - language: 已知语言（空则按 path 扩展名推断）
+func ExtractTags(path string, content []byte, language string) []Tag {
+	if language == "" {
+		language = detectLanguageByExt(path)
+	}
+	return extractTags(path, content, language)
+}
+
+// detectLanguageByExt 按扩展名推断语言（供 ExtractTags 使用）
+func detectLanguageByExt(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".go":
+		return "go"
+	case ".py":
+		return "python"
+	case ".js", ".jsx", ".mjs":
+		return "javascript"
+	case ".ts", ".tsx":
+		return "typescript"
+	default:
+		return ""
+	}
+}
+
 // extractTagsRegex extracts code tags from the given file content using
 // regex-based parsing. The language parameter determines which extraction
 // rules to apply.

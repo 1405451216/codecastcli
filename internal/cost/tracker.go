@@ -236,6 +236,8 @@ func (t *Tracker) SummaryByVariant() ([]VariantStat, error) {
 
 // Summary 返回全部成本汇总
 func (t *Tracker) Summary() (*Summary, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	rows, err := t.db.Query(`
 		SELECT model, provider,
 			SUM(prompt_tokens), SUM(completion_tokens), SUM(total_tokens),
@@ -265,12 +267,17 @@ func (t *Tracker) Summary() (*Summary, error) {
 		summary.TotalTokens += m.Tokens
 		summary.CallCount += m.Calls
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return summary, nil
 }
 
 // DailySummary 返回最近 N 天的每日汇总
 func (t *Tracker) DailySummary(days int) (map[string]*Daily, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	rows, err := t.db.Query(`
 		SELECT DATE(timestamp) as day,
 			SUM(cost_usd), SUM(cost_cny), COUNT(*), SUM(total_tokens)
@@ -292,11 +299,16 @@ func (t *Tracker) DailySummary(days int) (map[string]*Daily, error) {
 		}
 		result[d.Day] = &d
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
 // RecentRecords 返回最近 N 条记录
 func (t *Tracker) RecentRecords(limit int) ([]Record, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	rows, err := t.db.Query(`
 		SELECT id, model, provider, prompt_tokens, completion_tokens, total_tokens,
 			cost_usd, cost_cny, timestamp, session_id, command, prompt_variant

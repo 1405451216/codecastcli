@@ -9,6 +9,7 @@ import (
 
 	ap "agentprimordia/pkg"
 	"codecast/cli/internal/lsp"
+	"codecast/cli/internal/util"
 )
 
 // LSPTool 提供 LSP (Language Server Protocol) 集成，支持跳转定义、查找引用、
@@ -88,6 +89,11 @@ func (t *LSPTool) Execute(ctx context.Context, args json.RawMessage) (*ap.ToolRe
 
 	if params.FilePath == "" {
 		return ap.NewToolErrorResult("file_path 不能为空"), nil
+	}
+
+	// 路径遍历防护
+	if util.HasUnsafePathSegment(params.FilePath) {
+		return ap.NewToolErrorResult(fmt.Sprintf("路径不安全: %q 含 \"..\" 段或指向根目录", params.FilePath)), nil
 	}
 
 	// 推断语言

@@ -200,6 +200,30 @@
       "aliases": [],
       "description": "A/B 自动收敛管理 (enable/disable/reset/suggest/apply/epsilon)",
       "owner": "v0.3.1"
+    },
+    {
+      "name": "diff",
+      "aliases": [],
+      "description": "查看当前代码变更 (使用 /diff [branch])",
+      "owner": "v0.4.0"
+    },
+    {
+      "name": "history",
+      "aliases": [],
+      "description": "查看文件修改历史 (使用 /history <file>)",
+      "owner": "v0.4.0"
+    },
+    {
+      "name": "files",
+      "aliases": [],
+      "description": "列出匹配 glob 模式的文件 (使用 /files [pattern])",
+      "owner": "v0.4.0"
+    },
+    {
+      "name": "route",
+      "aliases": [],
+      "description": "智能模型路由管理",
+      "owner": "v0.4.0"
     }
   ]
 }

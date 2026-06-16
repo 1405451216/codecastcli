@@ -23,7 +23,17 @@ import (
 	"codecast/cli/internal/undo"
 )
 
-// buildPermHook 构建权限检查 Hook
+// buildPermHook 构建权限检查 Hook。
+//
+// F-11 修复：权限确认走 HITL 通道（InterruptRequest → HandleInterrupt → HumanResponse），
+// 而非直接调用 ConfirmPrompt。这样 permission.Manager 的 HITLManagerWrapper
+// 状态与实际确认流程一致，不再是无用代码。
+//
+// 流程：
+//  1. IsDenied → 直接拒绝
+//  2. ShouldApprove → 构造 InterruptRequest，调用 HandleInterrupt
+//  3. HandleInterrupt 内部调用 ConfirmPrompt，返回 HumanResponse
+//  4. 根据 HumanResponse 决定允许/拒绝/always-allow/edit-args
 func buildPermHook(mgr *permission.Manager) ap.HookFunc {
 	return func(ctx context.Context, hctx *ap.HookContext) error {
 		if hctx.ToolCall == nil {
@@ -37,24 +47,26 @@ func buildPermHook(mgr *permission.Manager) ap.HookFunc {
 		}
 
 		if mgr.ShouldApprove(toolName) {
-			args := hctx.ToolCall.Args
-			result := permission.ConfirmPrompt(toolName, args)
+			// F-11: 通过 HITL 通道路由，而非直接调 ConfirmPrompt
+			req := &permission.InterruptRequest{
+				Reason: permission.InterruptToolConfirm,
+				Data: map[string]any{
+					"tool": toolName,
+					"args": hctx.ToolCall.Args,
+				},
+			}
+			resp, allowAlways := permission.HandleInterrupt(mgr, req)
 
-			switch result.Action {
-			case permission.ActionAllow:
-				return nil
-			case permission.ActionDeny:
+			if !resp.Approved {
 				return fmt.Errorf("用户拒绝执行工具 %s", toolName)
-			case permission.ActionAlwaysAllow:
-				mgr.AddAutoAllow(toolName)
-				return nil
-			case permission.ActionEditArgs:
-				if result.ModifiedArgs != "" {
-					hctx.ToolCall.Args = result.ModifiedArgs
+			}
+			if allowAlways {
+				// HandleInterrupt 内部已调 AddAutoAllow，无需重复
+			}
+			if resp.Modified != nil {
+				if args, ok := resp.Modified["args"].(string); ok && args != "" {
+					hctx.ToolCall.Args = args
 				}
-				return nil
-			default:
-				return fmt.Errorf("用户拒绝执行工具 %s", toolName)
 			}
 		}
 
@@ -67,6 +79,8 @@ func buildPermHook(mgr *permission.Manager) ap.HookFunc {
 // 与 buildPermHook 形成双重保障：
 //   - ToolPermission 在 executor.Execute() 内部执行（更底层）
 //   - buildPermHook 在 ReAct 循环的 HookBeforeTool 阶段执行（更上层）
+//
+// F-11: ConfirmFunc 也走 HandleInterrupt，与 buildPermHook 保持一致。
 func applyToolPermissions(registry *ap.ToolRegistry, mgr *permission.Manager) {
 	for _, toolName := range registry.List() {
 		if !mgr.ShouldApprove(toolName) {
@@ -75,18 +89,15 @@ func applyToolPermissions(registry *ap.ToolRegistry, mgr *permission.Manager) {
 		perm := ap.ToolPermission{
 			RequireConfirmation: true,
 			ConfirmFunc: func(name string, args json.RawMessage) bool {
-				result := permission.ConfirmPrompt(name, string(args))
-				switch result.Action {
-				case permission.ActionAllow:
-					return true
-				case permission.ActionAlwaysAllow:
-					mgr.AddAutoAllow(name)
-					return true
-				case permission.ActionEditArgs:
-					return true
-				default:
-					return false
+				req := &permission.InterruptRequest{
+					Reason: permission.InterruptToolConfirm,
+					Data: map[string]any{
+						"tool": name,
+						"args": string(args),
+					},
 				}
+				resp, _ := permission.HandleInterrupt(mgr, req)
+				return resp.Approved
 			},
 		}
 		_ = registry.SetPermission(toolName, perm)

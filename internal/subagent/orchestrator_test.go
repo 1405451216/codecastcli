@@ -147,11 +147,11 @@ func TestParallelExecute_IsolatedMemory(t *testing.T) {
 	t.Run("each sub-task gets independent in-memory store", func(t *testing.T) {
 		// Verify that newIsolatedMemory creates distinct store instances
 		// that do not share state with each other.
-		store1, err := newIsolatedMemory("test1")
+		store1, _, err := newIsolatedMemory("test1")
 		if err != nil {
 			t.Fatalf("newIsolatedMemory() store1 failed: %v", err)
 		}
-		store2, err := newIsolatedMemory("test2")
+		store2, _, err := newIsolatedMemory("test2")
 		if err != nil {
 			t.Fatalf("newIsolatedMemory() store2 failed: %v", err)
 		}
@@ -196,11 +196,11 @@ func TestParallelExecute_IsolatedMemory(t *testing.T) {
 	t.Run("agents with isolated memory do not cross-contaminate", func(t *testing.T) {
 		// Create two agents with separate memory stores and verify
 		// that writing to one agent's memory does not appear in the other.
-		store1, err := newIsolatedMemory("agent1")
+		store1, _, err := newIsolatedMemory("agent1")
 		if err != nil {
 			t.Fatalf("newIsolatedMemory() store1 failed: %v", err)
 		}
-		store2, err := newIsolatedMemory("agent2")
+		store2, _, err := newIsolatedMemory("agent2")
 		if err != nil {
 			t.Fatalf("newIsolatedMemory() store2 failed: %v", err)
 		}

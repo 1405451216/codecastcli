@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	ap "agentprimordia/pkg"
+	"codecast/cli/internal/util"
 )
 
 // ReadFileTool 读取文件内容，支持行号范围读取、大文件截断提示、输出带行号。
@@ -83,6 +84,21 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (*ap.T
 		return ap.NewToolErrorResult("file_path 不能为空"), nil
 	}
 
+	// S-04 修复：路径遍历防护
+	if util.HasUnsafePathSegment(params.FilePath) {
+		return ap.NewToolErrorResult(fmt.Sprintf("路径不安全: %q 含 \"..\" 段或指向根目录", params.FilePath)), nil
+	}
+
+	// R5-H14 修复：检查文件大小，防止大文件导致内存溢出
+	const maxFileSize = 50 * 1024 * 1024 // 50MB
+	info, err := os.Stat(params.FilePath)
+	if err != nil {
+		return ap.NewToolErrorResult(fmt.Sprintf("获取文件信息失败: %v", err)), nil
+	}
+	if info.Size() > maxFileSize {
+		return ap.NewToolErrorResult(fmt.Sprintf("文件过大（%s），超过 %dMB 限制。请使用 start_line/end_line 分段读取", util.FormatSize(info.Size()), maxFileSize/(1024*1024))), nil
+	}
+
 	// 编码验证（v1 仅支持 utf-8 / utf8）
 	enc := strings.ToLower(strings.TrimSpace(params.Encoding))
 	if enc == "" {
@@ -109,21 +125,12 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (*ap.T
 	}
 
 	// 按行扫描
+	// M-01 修复：如果指定了行号范围，只收集目标行，避免大文件全量读入内存
 	scanner := bufio.NewScanner(f)
 	// 单行可能超过默认 64KB，扩展 buffer 上限到 10MB
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 
-	var lines []string
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		return ap.NewToolErrorResult(fmt.Sprintf("读取文件失败: %v", err)), nil
-	}
-
-	totalLines := len(lines)
-
-	// 解析默认值：未提供 start_line → 0，未提供 end_line → -1
+	needAll := params.StartLine == nil && params.EndLine == nil
 	start := 0
 	if params.StartLine != nil {
 		start = *params.StartLine
@@ -131,6 +138,30 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (*ap.T
 	end := -1
 	if params.EndLine != nil {
 		end = *params.EndLine
+	}
+
+	var lines []string
+	totalLines := 0
+	lineNum := 0
+	for scanner.Scan() {
+		totalLines++
+		lineNum++
+		if !needAll {
+			// 只收集目标范围内的行
+			if lineNum >= start+1 && (end == -1 || lineNum <= end+1) {
+				lines = append(lines, scanner.Text())
+			}
+			// N-04 修复：指定行号范围时，读完目标范围后提前退出
+			// totalLines 仅用于大文件截断提示，而指定行号范围时不会触发该提示
+			if end != -1 && lineNum > end+1 {
+				break
+			}
+		} else {
+			lines = append(lines, scanner.Text())
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return ap.NewToolErrorResult(fmt.Sprintf("读取文件失败: %v", err)), nil
 	}
 
 	// 参数校验
@@ -149,8 +180,15 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (*ap.T
 
 	// 构造带行号的输出（行号 1-based，与 grep_search 一致）
 	var sb strings.Builder
-	for i := start; i <= end; i++ {
-		fmt.Fprintf(&sb, "%4d│ %s\n", i+1, lines[i])
+	if needAll {
+		for i, line := range lines {
+			fmt.Fprintf(&sb, "%4d│ %s\n", i+1, line)
+		}
+	} else {
+		// M-01: lines 只包含目标范围的行，行号从 start+1 开始
+		for i, line := range lines {
+			fmt.Fprintf(&sb, "%4d│ %s\n", start+1+i, line)
+		}
 	}
 
 	// 大文件截断提示：仅在未指定 start_line/end_line 时触发

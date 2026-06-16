@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"strconv"
 	"strings"
@@ -201,11 +202,16 @@ func (c *Client) Start(rootURI string) error {
 }
 
 // Stop cancels the client context and cleans up pending requests.
+// COR-08 修复：不关闭 pending channel（避免 readResponses 向已关闭 channel 发送导致 panic），
+// 而是发送 nil 让 sendRequest 自然退出。
 func (c *Client) Stop() {
 	c.cancel()
 	c.mu.Lock()
 	for id, ch := range c.pending {
-		close(ch)
+		select {
+		case ch <- nil:
+		default:
+		}
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
@@ -227,7 +233,7 @@ func (c *Client) sendRequest(method string, params interface{}) (json.RawMessage
 		Params:  params,
 	}
 
-	ch := make(chan json.RawMessage, 1)
+	ch := make(chan json.RawMessage, 3) // COR-07 修复：增大缓冲，避免响应丢失
 	c.mu.Lock()
 	c.pending[id] = ch
 	c.mu.Unlock()
@@ -312,8 +318,9 @@ func (c *Client) readResponses() {
 		}
 
 		// Read the JSON body
+		// C-01 修复：使用 io.ReadFull 确保读取完整的 contentLength 字节
 		buf := make([]byte, contentLength)
-		if _, err := reader.Read(buf); err != nil {
+		if _, err := io.ReadFull(reader, buf); err != nil {
 			if c.ctx.Err() != nil {
 				return
 			}

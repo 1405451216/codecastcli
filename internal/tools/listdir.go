@@ -13,6 +13,7 @@ import (
 	"time"
 
 	ap "agentprimordia/pkg"
+	"codecast/cli/internal/util"
 )
 
 // ListFilesTool 列出目录内容。
@@ -77,8 +78,14 @@ func (t *ListFilesTool) Execute(ctx context.Context, args json.RawMessage) (*ap.
 	if params.Path == "" {
 		params.Path = "."
 	}
-	// max_depth 零值（JSON 未传）与"显式传 0"无法区分；
-	// 这里把零值当作默认 2（与文档一致），调用方若要"仅当前层"应传 1。
+	// 路径遍历防护
+	if util.HasUnsafePathSegment(params.Path) {
+		return ap.NewToolErrorResult(fmt.Sprintf("路径不安全: %q 含 \"..\" 段或指向根目录", params.Path)), nil
+	}
+	// L-02 修复：max_depth=0 表示仅当前层（不递归），1 表示下钻 1 层。
+	// 零值（JSON 未传）与"显式传 0"无法区分；
+	// 这里把零值当作默认 2（与文档一致），显式传 0 表示"仅当前层"。
+	// 注意：由于零值默认为 2，用户若要"仅当前层"应传 1。
 	if params.MaxDepth == 0 {
 		params.MaxDepth = 2
 	}
@@ -209,25 +216,6 @@ func renderEntry(sb *strings.Builder, e listEntry) {
 	}
 	sb.WriteString(fmt.Sprintf("%s%s (%s, %s)\n",
 		indent, filepath.Base(e.relPath),
-		formatSize(e.size), e.modified.Format("2006-01-02"),
+		util.FormatSize(e.size), e.modified.Format("2006-01-02"),
 	))
-}
-
-// formatSize 把字节数格式化为可读字符串
-func formatSize(n int64) string {
-	const (
-		kb = 1024
-		mb = 1024 * 1024
-		gb = 1024 * 1024 * 1024
-	)
-	switch {
-	case n >= gb:
-		return fmt.Sprintf("%.1f GB", float64(n)/float64(gb))
-	case n >= mb:
-		return fmt.Sprintf("%.1f MB", float64(n)/float64(mb))
-	case n >= kb:
-		return fmt.Sprintf("%.1f KB", float64(n)/float64(kb))
-	default:
-		return fmt.Sprintf("%d B", n)
-	}
 }

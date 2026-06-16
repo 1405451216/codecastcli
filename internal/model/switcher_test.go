@@ -8,7 +8,7 @@ import (
 )
 
 func TestFindModel(t *testing.T) {
-	// 测试已知模型
+	// 测试已知模型（更新为 2026 年 6 月最新版本）
 	tests := []struct {
 		modelID  string
 		found    bool
@@ -16,11 +16,11 @@ func TestFindModel(t *testing.T) {
 		provider string
 	}{
 		{"claude-sonnet-4-20250514", true, "Claude Sonnet 4", "anthropic"},
-		{"gpt-4o", true, "GPT-4o", "openai"},
-		{"gemini-2.5-pro", true, "Gemini 2.5 Pro", "google"},
-		{"deepseek-chat", true, "DeepSeek V3", "deepseek"},
-		{"qwen-max", true, "Qwen Max", "qwen"},
-		{"glm-4-plus", true, "GLM-4 Plus", "zhipu"},
+		{"gpt-4o", true, "GPT-4o (Legacy)", "openai"},
+		{"gemini-2.5-pro", true, "Gemini 2.5 Pro (Legacy)", "google"},
+		{"deepseek-v4-pro", true, "DeepSeek V4 Pro", "deepseek"},
+		{"qwen3.7-max", true, "Qwen 3.7 Max", "qwen"},
+		{"glm-5.2", true, "GLM-5.2", "zhipu"},
 	}
 
 	for _, tt := range tests {

@@ -6,8 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	ap "agentprimordia/pkg"
 	"gopkg.in/yaml.v3"
@@ -130,23 +132,102 @@ func (m *HookManager) buildEnv(hctx *ap.HookContext) map[string]string {
 
 // runCommand 执行 Shell 命令
 func (m *HookManager) runCommand(ctx context.Context, cfg HookConfig, env map[string]string) (string, error) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", cfg.Command)
+	// R5-C4 修复：根据操作系统选择正确的 Shell
+	var shell string
+	switch runtime.GOOS {
+	case "windows":
+		shell = "powershell"
+	default:
+		shell = "sh"
+	}
 
-	// 设置环境变量
-	cmd.Env = os.Environ()
+	cmdStr := cfg.Command
+	// R5-H17 修复：空命令检查
+	if strings.TrimSpace(cmdStr) == "" {
+		return "", fmt.Errorf("钩子命令为空: %s", cfg.Name)
+	}
+	// C-07 修复：命令白名单验证，防止恶意命令注入
+	if err := validateCommand(cmdStr); err != nil {
+		return "", fmt.Errorf("命令验证失败: %w", err)
+	}
+	if cfg.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(cfg.Timeout)*time.Second)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(ctx, shell, "-c", cmdStr)
+
+	// High 修复：清理基础环境变量，防止注入
+	cmd.Env = sanitizeEnvironment(os.Environ())
 	for k, v := range env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		// C-07 修复：增强环境变量验证，防止注入
+		safeV := sanitizeEnvValue(v)
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, safeV))
 	}
 	for k, v := range cfg.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		safeV := sanitizeEnvValue(v)
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, safeV))
 	}
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return string(output), fmt.Errorf("命令执行失败: %w\n输出: %s", err, string(output))
+		return string(output), fmt.Errorf("命令执行失败: %w", err)
 	}
 
 	return strings.TrimSpace(string(output)), nil
+}
+
+// validateCommand 验证命令安全性
+func validateCommand(cmd string) error {
+	// 禁止的危险命令模式
+	dangerousPatterns := []string{
+		"rm -rf /", "rm -rf /*", "del /f /s /q", "format",
+		"mkfs", "dd if=", "> /dev/", "chmod -R 777",
+		"curl.*|.*sh", "wget.*|.*sh", "eval",
+	}
+	cmdLower := strings.ToLower(cmd)
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(cmdLower, strings.ToLower(pattern)) {
+			return fmt.Errorf("命令包含危险模式: %s", pattern)
+		}
+	}
+	return nil
+}
+
+// sanitizeEnvValue 清理环境变量值，防止注入
+func sanitizeEnvValue(v string) string {
+	// 移除换行符和回车符
+	v = strings.ReplaceAll(v, "\n", "")
+	v = strings.ReplaceAll(v, "\r", "")
+	// 移除可能的命令分隔符
+	v = strings.ReplaceAll(v, ";", "")
+	v = strings.ReplaceAll(v, "|", "")
+	v = strings.ReplaceAll(v, "&", "")
+	v = strings.ReplaceAll(v, "`", "")
+	v = strings.ReplaceAll(v, "$(", "")
+	return v
+}
+
+// sanitizeEnvironment 清理基础环境变量，移除包含危险字符的变量值
+func sanitizeEnvironment(env []string) []string {
+	sanitized := make([]string, 0, len(env))
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key, value := parts[0], parts[1]
+		// 移除可能包含命令注入的环境变量
+		if strings.Contains(value, ";") || strings.Contains(value, "|") ||
+			strings.Contains(value, "&") || strings.Contains(value, "`") ||
+			strings.Contains(value, "\n") || strings.Contains(value, "\r") ||
+			strings.Contains(value, "$(") {
+			continue
+		}
+		sanitized = append(sanitized, fmt.Sprintf("%s=%s", key, value))
+	}
+	return sanitized
 }
 
 // List 返回所有钩子

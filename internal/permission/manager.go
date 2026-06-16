@@ -29,15 +29,17 @@ const (
 // 工具分类表
 var toolCategories = map[string]string{
 	// 只读工具
-	"read_file":   CategoryReadonly,
-	"list_dir":    CategoryReadonly,
-	"grep_search": CategoryReadonly,
-	"glob_search": CategoryReadonly,
-	"web_request": CategoryReadonly,
-	"web_fetch":   CategoryReadonly,
+	"read_file":    CategoryReadonly,
+	"list_files":   CategoryReadonly,
+	"grep_search":  CategoryReadonly,
+	"glob_search":  CategoryReadonly,
+	"web_request":  CategoryReadonly,
+	"web_fetch":    CategoryReadonly,
+	"lsp":          CategoryReadonly,
 	// 编辑工具
 	"write_file": CategoryEdit,
 	"edit_file":  CategoryEdit,
+	"multi_edit": CategoryEdit,
 	// 危险工具
 	"shell_execute": CategoryDanger,
 }
@@ -312,7 +314,11 @@ func (m *Manager) BuildHITLConfig() HITLConfig {
 	wrapper := &HITLManagerWrapper{
 		responseCh: responseCh,
 	}
+
+	// R5-C6 修复：写入 hitlMgr 需要写锁保护
+	m.mu.Lock()
 	m.hitlMgr = wrapper
+	m.mu.Unlock()
 
 	onInterrupt := func(req *InterruptRequest) {
 		wrapper.mu.Lock()
@@ -327,7 +333,10 @@ func (m *Manager) BuildHITLConfig() HITLConfig {
 		AutoApproveTools: autoApproveTools,
 	}
 
+	// R5-C6 修复：写入 hitlConfig 需要写锁保护
+	m.mu.Lock()
 	m.hitlConfig = cfg
+	m.mu.Unlock()
 	return cfg
 }
 
@@ -411,12 +420,15 @@ func (m *Manager) rebuildHITLConfig() {
 		m.hitlMgr.mu.Unlock()
 	}
 
+	// R5-C6 修复：写入 hitlConfig 需要写锁保护
+	m.mu.Lock()
 	m.hitlConfig = HITLConfig{
 		InterruptPoints:  interruptPoints,
 		HumanInputChan:   m.hitlMgr.responseCh,
 		OnInterrupt:      onInterrupt,
 		AutoApproveTools: autoApproveTools,
 	}
+	m.mu.Unlock()
 }
 
 // SendHumanResponse 通过 HITLConfig 发送人类响应
@@ -432,7 +444,8 @@ func GetToolCategory(toolName string) string {
 	if strings.HasPrefix(toolName, "mcp_") {
 		return CategoryMCP
 	}
-	return CategoryMCP
+	// MAINT-22 修复：未知工具默认归为危险类，保守处理
+	return CategoryDanger
 }
 
 // ParseApprovalMode 从字符串解析审批模式

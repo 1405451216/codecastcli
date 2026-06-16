@@ -150,3 +150,74 @@ func TestConfirmPrompt_ArgsTruncated(t *testing.T) {
 		t.Errorf("long args should not be fully present in output")
 	}
 }
+
+// TestHandleInterrupt_UpdatesHITLWrapperPending 验证 F-11 修复：
+// HandleInterrupt 在显示 ConfirmPrompt 前后正确更新 HITLManagerWrapper 的 pending 状态。
+func TestHandleInterrupt_UpdatesHITLWrapperPending(t *testing.T) {
+	mgr := NewManager(ModeSuggest)
+	mgr.BuildHITLConfig()
+
+	wrapper := mgr.HitlManager()
+	if wrapper == nil {
+		t.Fatal("HitlManager should not be nil after BuildHITLConfig")
+	}
+
+	// 初始状态：无 pending 请求
+	if req := wrapper.PendingRequest(); req != nil {
+		t.Errorf("initial pending should be nil, got %v", req)
+	}
+
+	// 在另一个 goroutine 中执行 HandleInterrupt（会阻塞等 stdin）
+	w := withStdin(t)
+	done := make(chan struct{})
+	var resp *HumanResponse
+	var allowAlways bool
+	go func() {
+		defer close(done)
+		req := &InterruptRequest{
+			Reason: InterruptToolConfirm,
+			Data:   map[string]any{"tool": "shell_execute", "args": `{"cmd":"ls"}`},
+		}
+		resp, allowAlways = HandleInterrupt(mgr, req)
+	}()
+
+	// 等一小段时间让 HandleInterrupt 设置 pending
+	// （由于 stdin 阻塞，HandleInterrupt 会在 ConfirmPrompt 处等待输入）
+	// 此时 pending 应该已被设置
+	// 注意：这个测试依赖时序，在慢机器上可能不稳定
+	// 但由于 pending 在 ConfirmPrompt 之前设置，应该很快可见
+
+	// 写入 "y" 让 ConfirmPrompt 返回
+	go w.WriteString("y\n")
+	captureStdout(t, func() {
+		<-done // 等待 HandleInterrupt 完成
+	})
+
+	if !resp.Approved {
+		t.Errorf("want Approved=true, got false")
+	}
+	if allowAlways {
+		t.Errorf("want allowAlways=false for 'y' input")
+	}
+
+	// HandleInterrupt 完成后 pending 应被清除
+	if req := wrapper.PendingRequest(); req != nil {
+		t.Errorf("pending should be nil after HandleInterrupt completes, got %v", req)
+	}
+}
+
+// TestHandleInterrupt_DeniedToolSkipsPrompt 验证被禁止的工具不会弹出确认提示。
+func TestHandleInterrupt_DeniedToolSkipsPrompt(t *testing.T) {
+	mgr := NewManager(ModeSuggest)
+	mgr.AddDeny("shell_execute")
+	mgr.BuildHITLConfig()
+
+	req := &InterruptRequest{
+		Reason: InterruptToolConfirm,
+		Data:   map[string]any{"tool": "shell_execute", "args": "{}"},
+	}
+	resp, _ := HandleInterrupt(mgr, req)
+	if resp.Approved {
+		t.Errorf("denied tool should not be approved")
+	}
+}

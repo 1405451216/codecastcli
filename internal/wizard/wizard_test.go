@@ -22,13 +22,13 @@ func TestProviderModelsContainsAllProviders(t *testing.T) {
 
 func TestProviderModelsKnownValues(t *testing.T) {
 	tests := map[string][]string{
-		"openai":    {"gpt-4o", "gpt-4o-mini", "o3"},
+		"openai":    {"gpt-5.4", "gpt-5.4-pro", "gpt-5.5-instant"},
 		"anthropic": {"claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-3-5-20241022"},
-		"gemini":    {"gemini-2.5-pro", "gemini-2.5-flash"},
-		"deepseek":  {"deepseek-chat", "deepseek-reasoner"},
-		"qwen":      {"qwen-max", "qwen-plus"},
-		"glm":       {"glm-4-plus"},
-		"ollama":    {"llama3", "codellama", "mistral"},
+		"gemini":    {"gemini-3-flash", "gemini-3-pro"},
+		"deepseek":  {"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3"},
+		"qwen":      {"qwen3.7-max", "qwen3.7-plus"},
+		"glm":       {"glm-5.2", "glm-5v-turbo"},
+		"ollama":    {"qwen3:32b", "qwen3:14b", "deepseek-r1:14b", "llama3.3:70b"},
 		"cohere":    {"command-r-plus"},
 		"mistral":   {"mistral-large-latest"},
 	}

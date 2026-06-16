@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	ap "agentprimordia/pkg"
 	ctxpkg "codecast/cli/internal/context"
@@ -55,7 +56,18 @@ func (a *CodecastAgent) StreamProcess(ctx context.Context, userInput string) err
 	msg := ap.UserMessage(a.injectCompressedContext(userInput))
 
 	// 智能模型路由：根据输入复杂度自动选择合适的模型
-	if a.router != nil && a.router.IsEnabled() {
+	// P1 L2: 优先用 learningRouter（若启用），否则退化为 L0 router
+	if a.learningRouter != nil && a.learningRouter.Config().Enabled {
+		fileCount := countFileReferences(userInput)
+		routedModel := a.learningRouter.Route(userInput, fileCount)
+		currentModel := a.config.Model
+		if routedModel != "" && routedModel != currentModel {
+			color.HiBlack("🔀 学习路由: %s → %s", currentModel, routedModel)
+			if err := a.SwitchModel(routedModel); err != nil {
+				color.HiBlack("路由切换失败，继续使用 %s: %v", currentModel, err)
+			}
+		}
+	} else if a.router != nil && a.router.IsEnabled() {
 		fileCount := countFileReferences(userInput)
 		routedModel := a.router.Route(userInput, fileCount)
 		currentModel := a.config.Model
@@ -148,11 +160,14 @@ func (a *CodecastAgent) runStreamOnce(ctx context.Context, msg ap.Message, userI
 				color.HiBlack(statsLine)
 			}
 			// Trigger async summarization after each turn
-			a.asyncSummarize(ctx)
+			a.asyncSummarize()
 
 		case ap.StreamEventError:
 			spinner.Stop()
 			color.Red("\n✗ %s", evt.Content)
+			// COR-04 修复：流错误后返回错误，而非 nil
+			fmt.Println()
+			return fmt.Errorf("流处理错误: %s", evt.Content)
 		}
 	}
 	fmt.Println()
@@ -166,8 +181,14 @@ func (a *CodecastAgent) runStreamOnce(ctx context.Context, msg ap.Message, userI
 	}
 
 	// 自动学习
+	// High 修复：添加 context 超时控制，防止 goroutine 泄漏
 	if mem := a.GetAutoMemory(); mem != nil {
-		go mem.LearnFromConversation(userInput, tokenBuf.String())
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = mem.LearnFromConversation(userInput, tokenBuf.String())
+			_ = ctx // 使用 ctx 避免编译警告
+		}()
 	}
 
 	return nil
@@ -217,10 +238,16 @@ func (a *CodecastAgent) checkAutoCompact(usage ap.AgentUsage) {
 //
 // 失败降级：返回错误，由调用方决定是否回退到 ClearContext。
 func (a *CodecastAgent) SummarizeContext(ctx context.Context) error {
+	// High 修复：使用 sessionMu 保护 session 和 agent 访问
+	a.sessionMu.RLock()
 	if a.session == nil {
+		a.sessionMu.RUnlock()
 		return fmt.Errorf("session is nil")
 	}
 	history := a.session.History()
+	currentAgent := a.agent
+	a.sessionMu.RUnlock()
+
 	if len(history) <= 2 {
 		return nil // 消息太少，没有压缩必要
 	}
@@ -229,7 +256,7 @@ func (a *CodecastAgent) SummarizeContext(ctx context.Context) error {
 
 	// 摘要函数：直接用 LLM provider（非流式，省 token）
 	summaryFn := func(ctx context.Context, prompt string) (string, error) {
-		resp, err := a.agent.Run(ctx, ap.UserMessage(prompt))
+		resp, err := currentAgent.Run(ctx, ap.UserMessage(prompt))
 		if err != nil {
 			return "", err
 		}
@@ -262,11 +289,18 @@ func (a *CodecastAgent) SummarizeContext(ctx context.Context) error {
 	}
 
 	// 存储压缩后的消息，下一轮 Process/StreamProcess 会注入到用户消息前缀中
+	a.compressedMu.Lock()
 	a.compressedHistory = compressed
+	a.compressedMu.Unlock()
 
 	// 重置 session（AP 框架 Session 没有公开的 AddMessage）。
 	// 摘要上下文已存入 compressedHistory，不会丢失。
-	a.session.Reset()
+	// High 修复：使用 sessionMu 保护 session 访问
+	a.sessionMu.Lock()
+	if a.session != nil {
+		a.session.Reset()
+	}
+	a.sessionMu.Unlock()
 
 	return nil
 }

@@ -370,6 +370,24 @@ func RegisterBuiltinCommands(r *CommandRegistry) {
 			return true
 		},
 	})
+	r.Register(&CommandEntry{
+		Name:        "semantic",
+		Aliases:     []string{"sem"},
+		Description: "语义索引管理 (index/query/stats)",
+		Handler: func(args string, ag *agent.CodecastAgent) bool {
+			handleSemanticCommand(args, ag)
+			return true
+		},
+	})
+	r.Register(&CommandEntry{
+		Name:        "benchmark",
+		Aliases:     []string{"bench"},
+		Description: "运行 benchmark 评估 (run/list/report)",
+		Handler: func(args string, ag *agent.CodecastAgent) bool {
+			handleBenchmarkCommand(args, ag)
+			return true
+		},
+	})
 }
 
 // ============== 辅助函数 ==============

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -194,7 +195,9 @@ func (s *Spinner) Start() {
 	s.mu.Unlock()
 
 	go func() {
-		for {
+		ticker := time.NewTicker(80 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
 			s.mu.Lock()
 			if !s.active {
 				s.mu.Unlock()

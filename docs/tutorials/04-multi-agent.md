@@ -26,7 +26,7 @@ Codecast 支持将复杂任务拆分给多个子 Agent 并行执行：
 预估 Token: ~15,000 | 预估耗时: ~3 分钟
 ```
 
-## /delegate — 委托执行
+## /delegate — 委托执行（顺序）
 
 ```
 > /delegate 给所有 API handler 添加 input validation
@@ -35,7 +35,7 @@ Codecast 支持将复杂任务拆分给多个子 Agent 并行执行：
 AI 会：
 1. 分析任务范围（找到所有 handler）
 2. 拆分为独立子任务
-3. 子 Agent 并行执行（每个子 Agent 隔离运行）
+3. 子 Agent **顺序**执行（v0.4 行为）
 4. 汇总结果
 
 ### DAG 可视化
@@ -76,7 +76,55 @@ AI 会：
 - **上下文隔离** — 子 Agent 之间互不可见
 - **资源限制** — 每个子 Agent 有独立的 Token 预算
 
+## /subagent — 自动并行编排（v1.0+）
+
+v1.0 引入自动并行编排，比 `/delegate` 更智能：
+
+```
+> /subagent 重构 internal/tools 下所有 edit 工具的错误处理
+```
+
+**工作流**：
+1. Plan Agent 拆分为多个子任务
+2. AutoParallel 检测每个子任务读写的文件集合
+3. **无文件冲突的任务自动并行执行**
+4. 有文件冲突的任务自动串行执行
+5. 各子 Agent 在隔离沙箱运行
+
+**输出示例**：
+```
+[plan] 拆分为 3 个子任务：
+  ├─ T1: edit.go (无依赖)
+  ├─ T2: multi_edit.go (无依赖)
+  └─ T3: fuzzy.go (无依赖)
+[exec] 并行执行 T1 T2 T3
+[done] 3/3 成功
+```
+
+### 查看 DAG
+
+```bash
+/dag
+```
+
+### 强制串行
+
+如果并行导致冲突，可以强制串行：
+
+```bash
+/subagent --serial "任务描述"
+```
+
+### /delegate vs /subagent 对比
+
+| 命令 | 行为 | 版本 |
+|------|------|------|
+| `/delegate` | 顺序执行子任务 | v0.4 |
+| `/subagent` | 自动检测冲突，无冲突并行 | v1.0+ |
+| `/subagent --serial` | 强制串行 | v1.0+ |
+
 ## 下一步
 
 - [自定义提示词](05-custom-prompts.md)
 - [成本优化](06-cost-optimization.md)
+- [v1.0 新功能教程](07-v1-features.md)

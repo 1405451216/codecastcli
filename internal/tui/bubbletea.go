@@ -167,11 +167,16 @@ func (m Model) Init() tea.Cmd {
 }
 
 // Update 实现 tea.Model.Update
+// C-06/C-10 修复：使用值接收器满足 tea.Model 接口，通过指针 mu 保护共享状态
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var (
 		cmd  tea.Cmd
 		cmds []tea.Cmd
 	)
+
+	// 加锁保护共享状态（mu 是指针，值拷贝后仍指向同一把锁）
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -368,6 +373,7 @@ func (m Model) startAgentStream(userInput string) tea.Cmd {
 }
 
 // updateStreamingViewport 更新流式输出中的 viewport（实时追加 token）
+// 注意：调用方必须已持有 m.mu 锁，此方法内部不再加锁
 func (m *Model) updateStreamingViewport() {
 	content := m.streamingContent.String()
 	if content == "" {
@@ -375,9 +381,7 @@ func (m *Model) updateStreamingViewport() {
 	}
 
 	// 找到最后一条 assistant 消息并更新其内容
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	// 调用方已持有锁，无需重复加锁
 	if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == "assistant" {
 		m.messages[len(m.messages)-1].Content = content
 	} else {
@@ -392,15 +396,14 @@ func (m *Model) updateStreamingViewport() {
 }
 
 // finalizeStreamingContent 将流式累积的内容固化到最后一条 assistant 消息
+// 注意：调用方必须已持有 m.mu 锁，此方法内部不再加锁
 func (m *Model) finalizeStreamingContent() {
 	content := m.streamingContent.String()
 	if content == "" {
 		return
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	// 调用方已持有锁，无需重复加锁
 	if len(m.messages) > 0 && m.messages[len(m.messages)-1].Role == "assistant" {
 		m.messages[len(m.messages)-1].Content = content
 	} else {

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	ap "agentprimordia/pkg"
+	"codecast/cli/internal/util"
 )
 
 // GlobSearchTool 按文件名模式搜索文件
@@ -68,6 +69,11 @@ func (t *GlobSearchTool) Execute(ctx context.Context, args json.RawMessage) (*ap
 
 	if params.Path == "" {
 		params.Path = "."
+	}
+
+	// 路径遍历防护
+	if util.HasUnsafePathSegment(params.Path) {
+		return ap.NewToolErrorResult(fmt.Sprintf("路径不安全: %q 含 \"..\" 段或指向根目录", params.Path)), nil
 	}
 
 	// 规范化路径
@@ -141,6 +147,11 @@ func globRecursive(root, pattern string) ([]string, error) {
 		return filepath.Glob(filepath.Join(root, pattern))
 	}
 
+	// MAINT-14 修复：处理 parts[0] 前缀约束
+	// 例如 "src/**/*.go" 中 parts[0]="src/"，只有 src/ 下的文件才应匹配
+	prefix := strings.TrimRight(parts[0], string(filepath.Separator))
+	prefix = strings.TrimRight(prefix, "/")
+
 	suffix := parts[1]
 	suffix = strings.TrimPrefix(suffix, string(filepath.Separator))
 
@@ -159,6 +170,16 @@ func globRecursive(root, pattern string) ([]string, error) {
 		if d.IsDir() {
 			if skipDirs[d.Name()] {
 				return filepath.SkipDir
+			}
+			// MAINT-14 修复：如果指定了前缀，跳过不在前缀目录下的子目录
+			if prefix != "" && prefix != "." {
+				rel, relErr := filepath.Rel(root, path)
+				if relErr == nil && !strings.HasPrefix(rel, prefix+string(filepath.Separator)) && rel != prefix {
+					// 如果当前目录已经超过前缀范围，跳过
+					if !strings.HasPrefix(prefix, rel+string(filepath.Separator)) {
+						return filepath.SkipDir
+					}
+				}
 			}
 			// .gitignore 感知：检查目录是否被忽略
 			if gitFilter != nil {
@@ -180,6 +201,13 @@ func globRecursive(root, pattern string) ([]string, error) {
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return nil
+		}
+
+		// MAINT-14 修复：如果指定了前缀，文件必须在前缀目录下
+		if prefix != "" && prefix != "." {
+			if !strings.HasPrefix(rel, prefix+string(filepath.Separator)) {
+				return nil
+			}
 		}
 
 		// 检查后缀匹配

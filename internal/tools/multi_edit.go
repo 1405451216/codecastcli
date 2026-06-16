@@ -142,6 +142,11 @@ func (t *MultiEditTool) preflight(edits []editOperation) ([]planEntry, error) {
 			return nil, fmt.Errorf("edit[%d] (file=%s): old_string 不能为空", i, edit.FilePath)
 		}
 
+		// S-04 修复：路径遍历防护
+		if util.HasUnsafePathSegment(edit.FilePath) {
+			return nil, fmt.Errorf("edit[%d] (file=%s): 路径不安全，含 \"..\" 段或指向根目录", i, edit.FilePath)
+		}
+
 		absPath, err := filepath.Abs(edit.FilePath)
 		if err != nil {
 			return nil, fmt.Errorf("edit[%d] (file=%s): 路径解析失败: %v", i, edit.FilePath, err)
@@ -219,7 +224,12 @@ func (t *MultiEditTool) preflight(edits []editOperation) ([]planEntry, error) {
 func (t *MultiEditTool) atomicWrite(plan []planEntry) error {
 	// 跟踪已成功 rename 的文件，以便失败时回滚
 	// key = abs path, value = 原始内容（用于回滚）
-	rolled := map[string][]byte{}
+	// COR-22 修复：rolled 同时保存原始内容和权限
+	type rollbackInfo struct {
+		data []byte
+		mode os.FileMode
+	}
+	rolled := map[string]rollbackInfo{}
 
 	// 记录所有产生的临时文件，失败时清理
 	tmpFiles := []string{}
@@ -231,8 +241,8 @@ func (t *MultiEditTool) atomicWrite(plan []planEntry) error {
 			return
 		}
 		// 回滚：恢复已写入的文件
-		for path, orig := range rolled {
-			if err := os.WriteFile(path, orig, 0644); err != nil {
+		for path, rb := range rolled {
+			if err := os.WriteFile(path, rb.data, rb.mode); err != nil {
 				// 回滚失败：记录但不掩盖原错误
 				fmt.Fprintf(os.Stderr, "严重: 回滚文件 %s 失败: %v\n", path, err)
 			}
@@ -264,9 +274,13 @@ func (t *MultiEditTool) atomicWrite(plan []planEntry) error {
 			return fmt.Errorf("写入失败: 读取原文用于回滚 %s: %v", p.edit.FilePath, readErr)
 		}
 		if err := os.Rename(tmpFile, p.edit.FilePath); err != nil {
-			return fmt.Errorf("写入失败: 重命名 %s: %v", p.edit.FilePath, err)
+			// C-02 修复：Windows 上 Rename 可能因文件锁定失败，回退到覆盖写入
+			if writeErr := overwriteFile(p.edit.FilePath, []byte(p.newContent), p.originalMode); writeErr != nil {
+				return fmt.Errorf("写入失败: 重命名和覆盖均失败 %s: rename=%v overwrite=%v", p.edit.FilePath, err, writeErr)
+			}
+			os.Remove(tmpFile) // 清理临时文件
 		}
-		rolled[p.edit.FilePath] = origBytes
+		rolled[p.edit.FilePath] = rollbackInfo{data: origBytes, mode: p.originalMode}
 	}
 
 	committed = true

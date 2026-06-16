@@ -10,7 +10,7 @@ func TestNewManager_SuggestMode(t *testing.T) {
 	}
 
 	// 建议模式下所有工具都需要确认，ShouldApprove 返回 true
-	tools := []string{"read_file", "list_dir", "grep_search", "glob_search",
+	tools := []string{"read_file", "list_files", "grep_search", "glob_search",
 		"web_request", "web_fetch", "write_file", "edit_file", "shell_execute",
 		"mcp_some_tool", "unknown_tool"}
 
@@ -29,8 +29,8 @@ func TestNewManager_AutoEditMode(t *testing.T) {
 	}
 
 	// 只读和编辑类工具自动放行，ShouldApprove 返回 false
-	allowedTools := []string{"read_file", "list_dir", "grep_search", "glob_search",
-		"web_request", "web_fetch", "write_file", "edit_file"}
+	allowedTools := []string{"read_file", "list_files", "grep_search", "glob_search",
+		"web_request", "web_fetch", "write_file", "edit_file", "multi_edit", "lsp"}
 
 	for _, tool := range allowedTools {
 		if m.ShouldApprove(tool) {
@@ -56,8 +56,8 @@ func TestNewManager_FullAutoMode(t *testing.T) {
 	}
 
 	// 全自动模式下所有已知工具自动放行，ShouldApprove 返回 false
-	knownTools := []string{"read_file", "list_dir", "grep_search", "glob_search",
-		"web_request", "web_fetch", "write_file", "edit_file", "shell_execute"}
+	knownTools := []string{"read_file", "list_files", "grep_search", "glob_search",
+		"web_request", "web_fetch", "write_file", "edit_file", "multi_edit", "lsp", "shell_execute"}
 
 	for _, tool := range knownTools {
 		if m.ShouldApprove(tool) {
@@ -216,23 +216,25 @@ func TestGetToolCategory(t *testing.T) {
 	}{
 		// 只读工具
 		{"read_file", CategoryReadonly},
-		{"list_dir", CategoryReadonly},
+		{"list_files", CategoryReadonly},
 		{"grep_search", CategoryReadonly},
 		{"glob_search", CategoryReadonly},
 		{"web_request", CategoryReadonly},
 		{"web_fetch", CategoryReadonly},
+		{"lsp", CategoryReadonly},
 		// 编辑工具
 		{"write_file", CategoryEdit},
 		{"edit_file", CategoryEdit},
+		{"multi_edit", CategoryEdit},
 		// 危险工具
 		{"shell_execute", CategoryDanger},
 		// MCP 工具
 		{"mcp_some_tool", CategoryMCP},
 		{"mcp_another", CategoryMCP},
 		{"mcp_", CategoryMCP},
-		// 未知工具（当前实现中未知工具也归为 MCP 类别）
-		{"unknown_tool", CategoryMCP},
-		{"random", CategoryMCP},
+		// 未知工具（默认归为危险类，保守处理）
+		{"unknown_tool", CategoryDanger},
+		{"random", CategoryDanger},
 	}
 
 	for _, tt := range tests {

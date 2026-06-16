@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -35,7 +36,8 @@ import (
 )
 
 // quitFlag 标记 REPL 是否已收到退出信号。
-var quitFlag bool
+// Critical 修复：使用 atomic.Bool 保护并发访问
+var quitFlag atomic.Bool
 
 // commandSuggestions 是斜杠命令的补全建议。
 var commandSuggestions []prompt.Suggest
@@ -121,33 +123,89 @@ func runInteractive() error {
 	RegisterBuiltinCommands(globalCommandRegistry)
 	commandSuggestions = globalCommandRegistry.Suggestions()
 
-	// 启动神经网络动画
+	// 启动 splash（阻塞式）：~2.5 秒后自动结束，保证 splash 完全退出后再进入主流程
 	s := splash.DefaultSplash()
-	go s.Run()
-	fmt.Println("按任意键跳过动画...")
-	_, _ = bufio.NewReader(os.Stdin).ReadByte()
-	s.Finish()
+	splashDone := make(chan struct{})
+	go func() {
+		s.Run()      // 内部是 RunAsync + 等待 done
+		close(splashDone)
+	}()
+	go func() {
+		time.Sleep(2500 * time.Millisecond)
+		s.Finish()
+	}()
+	<-splashDone
+	time.Sleep(50 * time.Millisecond) // 给 splash 最后一帧渲染缓冲
 
 	ui.PrintHelp()
 	fmt.Println()
 
-	// 检查 API Key
-	if cfg.APIKey == "" {
-		color.Yellow("⚠️  未配置 API Key")
-		fmt.Print("请输入 API Key (输入将隐藏): ")
-		apiKey, err := term.ReadPassword(int(syscall.Stdin))
+	// ───── 启动初始化：Provider → Model → Key（Ollama 等本地模型跳过）→ 权限模式 ─────
+	needsSetup := cfg.APIKey == ""
+
+	if needsSetup {
+		// 1) Provider
+		color.Cyan("「步骤 1/3」选择 Provider")
+		cfg.Provider = chooseProvider(cfg.Provider)
+
+		// 2) Model（根据 Provider 显示推荐模型）
 		fmt.Println()
-		if err != nil {
-			return fmt.Errorf("读取 API Key 失败: %w", err)
+		color.Cyan("「步骤 2/3」选择模型")
+		cfg.Model = chooseModel(cfg.Provider, cfg.Model)
+
+		// 3) API Key（本地模型不需要）
+		fmt.Println()
+		if providerNeedsAPIKey(cfg.Provider) {
+			color.Cyan("「步骤 3/3」输入 API Key")
+			for {
+				fmt.Print("API Key (隐藏输入): ")
+				apiKey, err := term.ReadPassword(int(syscall.Stdin))
+				fmt.Println()
+				if err != nil {
+					color.Red("  读取失败: %v", err)
+					continue
+				}
+				trimmed := strings.TrimSpace(string(apiKey))
+				if trimmed == "" {
+					color.Red("  API Key 不能为空，请重试")
+					continue
+				}
+				cfg.APIKey = trimmed
+				break
+			}
+			if err := config.Save(cfg); err != nil {
+				color.Yellow("⚠ 保存配置失败: %v", err)
+			} else {
+				color.Green("✓ 配置已保存")
+			}
+		} else {
+			color.Green("✓ %s 是本地模型，不需要 API Key", cfg.Provider)
+			if err := config.Save(cfg); err != nil {
+				color.Yellow("⚠ 保存配置失败: %v", err)
+			}
 		}
-		cfg.APIKey = strings.TrimSpace(string(apiKey))
-		if cfg.APIKey == "" {
-			return fmt.Errorf("API Key 不能为空")
+
+		// 4) 权限模式
+		fmt.Println()
+		color.Cyan("「附加」选择权限模式")
+		if cfg.PermissionMode == "" {
+			cfg.PermissionMode = choosePermissionMode("suggest")
+			if err := config.Save(cfg); err != nil {
+				color.Yellow("⚠ 保存配置失败: %v", err)
+			}
 		}
-		if err := config.Save(cfg); err != nil {
-			return fmt.Errorf("保存配置失败: %w", err)
+		fmt.Println()
+	} else {
+		// 已有配置，简洁显示
+		color.Cyan("当前配置:")
+		color.White("  Provider:   %s", cfg.Provider)
+		color.White("  Model:      %s", cfg.Model)
+		color.White("  API Key:    %s", cfg.MaskedAPIKey())
+		if cfg.PermissionMode != "" {
+			color.White("  权限模式:  %s", cfg.PermissionMode)
 		}
-		color.Green("✓ API Key 已保存")
+		color.White("  提示: 使用 /model /config /rules 可调整")
+		fmt.Println()
 	}
 
 	// 判断是否需要恢复会话
@@ -255,7 +313,7 @@ func runGoPromptREPL() (err error) {
 		prompt.OptionDescriptionBGColor(prompt.Black),
 	)
 	p.Run()
-	if quitFlag {
+	if quitFlag.Load() {
 		return nil
 	}
 	return nil
@@ -296,7 +354,7 @@ func runBufioREPL() {
 
 		if handleSpecialCommand(input, codecastAgent, &running) {
 			if !running {
-				quitFlag = true
+				quitFlag.Store(true)
 			}
 			continue
 		}
@@ -322,7 +380,7 @@ func executor(input string) {
 	running := true
 	if handleSpecialCommand(input, codecastAgent, &running) {
 		if !running {
-			quitFlag = true
+			quitFlag.Store(true)
 		}
 		return
 	}
@@ -386,6 +444,196 @@ func getHistoryFilePath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "history"), nil
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 启动引导辅助：Provider / Model / 权限模式
+// ─────────────────────────────────────────────────────────────────────
+
+// providerTable：所有支持的 Provider 与推荐模型（截至 2026 年 6 月最新，已联网验证）
+var providerTable = map[string][]string{
+	"openai":    {"gpt-5.4", "gpt-5.4-pro", "gpt-5.5-instant"},
+	"anthropic": {"claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-3-5-20241022"},
+	"gemini":    {"gemini-3-flash", "gemini-3-pro"},
+	"deepseek":  {"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3"},
+	"qwen":      {"qwen3.7-max", "qwen3.7-plus"},
+	"glm":       {"glm-5.2", "glm-5v-turbo"},
+	"mimo":      {"mimo-v2.5-pro"},
+	"ollama":    {"qwen3:32b", "qwen3:14b", "deepseek-r1:14b", "llama3.3:70b"},
+	"cohere":    {"command-r-plus"},
+	"mistral":   {"mistral-large-latest"},
+	"local":     {"local-default"},
+}
+
+// providerOrder：Provider 显示顺序
+var providerOrder = []string{
+	"openai", "anthropic", "gemini", "deepseek",
+	"qwen", "glm", "ollama", "cohere", "mistral", "local",
+}
+
+// providerDescriptions：每个 Provider 的简短说明
+var providerDescriptions = map[string]string{
+	"openai":    "OpenAI（GPT 系列）",
+	"anthropic": "Anthropic Claude（强代码能力）",
+	"gemini":    "Google Gemini",
+	"deepseek":  "DeepSeek（高性价比推理）",
+	"qwen":      "阿里通义千问 Qwen",
+	"glm":       "智谱 GLM",
+	"ollama":    "Ollama 本地模型（无需 API Key）",
+	"cohere":    "Cohere",
+	"mistral":   "Mistral AI",
+	"local":     "本地兼容接口（OpenAI 兼容协议）",
+}
+
+// providerNeedsAPIKey：该 Provider 是否需要 API Key
+func providerNeedsAPIKey(provider string) bool {
+	switch provider {
+	case "ollama", "local":
+		return false
+	}
+	return true
+}
+
+// chooseProvider：让用户从列表选 Provider，支持默认值（回车即采用）
+func chooseProvider(defaultVal string) string {
+	reader := bufio.NewReader(os.Stdin)
+	for i, name := range providerOrder {
+		desc := providerDescriptions[name]
+		mark := ""
+		if defaultVal != "" && strings.EqualFold(name, defaultVal) {
+			mark = color.YellowString("  ★")
+		}
+		fmt.Printf("  %2d) %-12s %s%s\n", i+1, name, desc, mark)
+	}
+
+	prompt := color.CyanString("选择编号 [%s]: ", defaultVal)
+	for {
+		fmt.Print(prompt)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			// stdin 不可读（比如管道），直接用默认值
+			return defaultVal
+		}
+		line = strings.TrimSpace(line)
+
+		// 回车 → 使用默认值
+		if line == "" && defaultVal != "" {
+			return defaultVal
+		}
+
+		// 数字选择
+		var idx int
+		if _, err := fmt.Sscanf(line, "%d", &idx); err == nil {
+			if idx >= 1 && idx <= len(providerOrder) {
+				return providerOrder[idx-1]
+			}
+		}
+
+		// 直接输入 provider 名称
+		lower := strings.ToLower(line)
+		for _, name := range providerOrder {
+			if lower == name {
+				return name
+			}
+		}
+
+		color.Red("  无效输入，请输入 1-%d 或 Provider 名称", len(providerOrder))
+	}
+}
+
+// chooseModel：根据 Provider 显示推荐模型，用户选择或手动输入
+func chooseModel(provider, defaultVal string) string {
+	models := providerTable[provider]
+	reader := bufio.NewReader(os.Stdin)
+
+	for i, m := range models {
+		mark := ""
+		if defaultVal != "" && m == defaultVal {
+			mark = color.YellowString("  ★")
+		}
+		fmt.Printf("  %2d) %s%s\n", i+1, m, mark)
+	}
+
+	prompt := color.CyanString("选择编号或直接输入模型名 [%s]: ", defaultVal)
+	for {
+		fmt.Print(prompt)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return defaultVal
+		}
+		line = strings.TrimSpace(line)
+
+		// 回车 → 使用默认值
+		if line == "" && defaultVal != "" {
+			return defaultVal
+		}
+
+		// 数字选择
+		var idx int
+		if _, err := fmt.Sscanf(line, "%d", &idx); err == nil {
+			if idx >= 1 && idx <= len(models) {
+				return models[idx-1]
+			}
+		}
+
+		// 自定义模型名
+		if line != "" {
+			return line
+		}
+
+		color.Red("  无效输入，请输入 1-%d 或模型名称", len(models))
+	}
+}
+
+// choosePermissionMode：选择权限模式
+func choosePermissionMode(defaultVal string) string {
+	modes := []struct {
+		name string
+		desc string
+	}{
+		{"suggest", "每项操作前都需要确认（最安全）"},
+		{"auto-edit", "自动应用文件编辑，运行命令前需要确认"},
+		{"full-auto", "自动应用所有变更（本地项目推荐）"},
+	}
+	reader := bufio.NewReader(os.Stdin)
+
+	for i, m := range modes {
+		mark := ""
+		if defaultVal != "" && m.name == defaultVal {
+			mark = color.YellowString("  ★")
+		}
+		fmt.Printf("  %d) %-12s %s%s\n", i+1, m.name, m.desc, mark)
+	}
+
+	prompt := color.CyanString("选择编号 [%s]: ", defaultVal)
+	for {
+		fmt.Print(prompt)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return defaultVal
+		}
+		line = strings.TrimSpace(line)
+
+		if line == "" && defaultVal != "" {
+			return defaultVal
+		}
+
+		var idx int
+		if _, err := fmt.Sscanf(line, "%d", &idx); err == nil {
+			if idx >= 1 && idx <= len(modes) {
+				return modes[idx-1].name
+			}
+		}
+
+		lower := strings.ToLower(line)
+		for _, m := range modes {
+			if lower == m.name {
+				return m.name
+			}
+		}
+
+		color.Red("  无效输入，请输入 1-%d 或模式名称", len(modes))
+	}
 }
 
 const maxHistory = 1000

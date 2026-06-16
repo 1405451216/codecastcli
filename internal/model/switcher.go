@@ -22,27 +22,42 @@ type ModelInfo struct {
 	CostPer1kOut   float64 `json:"cost_per_1k_output"`
 }
 
-// KnownModels 已知模型列表
+// KnownModels 已知模型列表（截至 2026 年 6 月最新版本，已联网验证）
 var KnownModels = []ModelInfo{
-	// Anthropic
+	// Anthropic（Claude 4 系列仍为可用最新；Fable 5 于 6.13 因出口管制全球封禁，不可用）
 	{ID: "claude-sonnet-4-20250514", Name: "Claude Sonnet 4", Provider: "anthropic", ContextWindow: 200000, MaxOutput: 64000, SupportsVision: true, CostPer1kIn: 0.003, CostPer1kOut: 0.015},
 	{ID: "claude-opus-4-20250514", Name: "Claude Opus 4", Provider: "anthropic", ContextWindow: 200000, MaxOutput: 32000, SupportsVision: true, CostPer1kIn: 0.015, CostPer1kOut: 0.075},
 	{ID: "claude-haiku-3-5-20241022", Name: "Claude Haiku 3.5", Provider: "anthropic", ContextWindow: 200000, MaxOutput: 8192, SupportsVision: true, CostPer1kIn: 0.001, CostPer1kOut: 0.005},
-	// OpenAI
-	{ID: "gpt-4o", Name: "GPT-4o", Provider: "openai", ContextWindow: 128000, MaxOutput: 16384, SupportsVision: true, CostPer1kIn: 0.005, CostPer1kOut: 0.015},
-	{ID: "gpt-4o-mini", Name: "GPT-4o Mini", Provider: "openai", ContextWindow: 128000, MaxOutput: 16384, SupportsVision: true, CostPer1kIn: 0.00015, CostPer1kOut: 0.0006},
-	{ID: "o3", Name: "o3", Provider: "openai", ContextWindow: 200000, MaxOutput: 100000, SupportsVision: false, CostPer1kIn: 0.002, CostPer1kOut: 0.008},
-	// Google
-	{ID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro", Provider: "google", ContextWindow: 1000000, MaxOutput: 65536, SupportsVision: true, CostPer1kIn: 0.00125, CostPer1kOut: 0.005},
-	{ID: "gemini-2.5-flash", Name: "Gemini 2.5 Flash", Provider: "google", ContextWindow: 1000000, MaxOutput: 65536, SupportsVision: true, CostPer1kIn: 0.00015, CostPer1kOut: 0.0006},
-	// DeepSeek
-	{ID: "deepseek-chat", Name: "DeepSeek V3", Provider: "deepseek", ContextWindow: 64000, MaxOutput: 8192, SupportsVision: false, CostPer1kIn: 0.00014, CostPer1kOut: 0.00028},
-	{ID: "deepseek-reasoner", Name: "DeepSeek R1", Provider: "deepseek", ContextWindow: 64000, MaxOutput: 8192, SupportsVision: false, CostPer1kIn: 0.00055, CostPer1kOut: 0.00219},
-	// Qwen
-	{ID: "qwen-max", Name: "Qwen Max", Provider: "qwen", ContextWindow: 32000, MaxOutput: 8192, SupportsVision: false, CostPer1kIn: 0.002, CostPer1kOut: 0.006},
-	{ID: "qwen-plus", Name: "Qwen Plus", Provider: "qwen", ContextWindow: 131072, MaxOutput: 8192, SupportsVision: false, CostPer1kIn: 0.0004, CostPer1kOut: 0.0012},
-	// GLM
-	{ID: "glm-4-plus", Name: "GLM-4 Plus", Provider: "zhipu", ContextWindow: 128000, MaxOutput: 4096, SupportsVision: true, CostPer1kIn: 0.05, CostPer1kOut: 0.05},
+	// OpenAI（GPT-5.4/5.5 为截至 2026 年 6 月最新；o3/gpt-4o 保留兼容）
+	{ID: "gpt-5.4", Name: "GPT-5.4", Provider: "openai", ContextWindow: 200000, MaxOutput: 64000, SupportsVision: true, CostPer1kIn: 0.005, CostPer1kOut: 0.02},
+	{ID: "gpt-5.4-pro", Name: "GPT-5.4 Pro", Provider: "openai", ContextWindow: 200000, MaxOutput: 100000, SupportsVision: true, CostPer1kIn: 0.01, CostPer1kOut: 0.04},
+	{ID: "gpt-5.5-instant", Name: "GPT-5.5 Instant", Provider: "openai", ContextWindow: 200000, MaxOutput: 32768, SupportsVision: true, CostPer1kIn: 0, CostPer1kOut: 0},
+	{ID: "o3", Name: "o3 (Legacy)", Provider: "openai", ContextWindow: 200000, MaxOutput: 100000, SupportsVision: false, CostPer1kIn: 0.002, CostPer1kOut: 0.008},
+	{ID: "o3-mini", Name: "o3 Mini (Legacy)", Provider: "openai", ContextWindow: 200000, MaxOutput: 50000, SupportsVision: false, CostPer1kIn: 0.001, CostPer1kOut: 0.004},
+	{ID: "gpt-4o", Name: "GPT-4o (Legacy)", Provider: "openai", ContextWindow: 128000, MaxOutput: 16384, SupportsVision: true, CostPer1kIn: 0.005, CostPer1kOut: 0.015},
+	{ID: "gpt-4o-mini", Name: "GPT-4o Mini (Legacy)", Provider: "openai", ContextWindow: 128000, MaxOutput: 16384, SupportsVision: true, CostPer1kIn: 0.00015, CostPer1kOut: 0.0006},
+	// Google（Gemini 3 系列为截至 2026 年 6 月最新）
+	{ID: "gemini-3-flash", Name: "Gemini 3 Flash", Provider: "google", ContextWindow: 1000000, MaxOutput: 8192, SupportsVision: true, CostPer1kIn: 0.00015, CostPer1kOut: 0.0006},
+	{ID: "gemini-3-pro", Name: "Gemini 3 Pro", Provider: "google", ContextWindow: 1000000, MaxOutput: 65536, SupportsVision: true, CostPer1kIn: 0.00125, CostPer1kOut: 0.005},
+	{ID: "gemini-2.5-pro", Name: "Gemini 2.5 Pro (Legacy)", Provider: "google", ContextWindow: 1000000, MaxOutput: 65536, SupportsVision: true, CostPer1kIn: 0.00125, CostPer1kOut: 0.005},
+	// DeepSeek（V4-Pro/V4-Flash 为截至 2026 年 6 月最新；V3/R1/R1-Zero 保留兼容）
+	{ID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro", Provider: "deepseek", ContextWindow: 1000000, MaxOutput: 32768, SupportsVision: false, CostPer1kIn: 0.0002, CostPer1kOut: 0.0008},
+	{ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Provider: "deepseek", ContextWindow: 1000000, MaxOutput: 32768, SupportsVision: false, CostPer1kIn: 0.0001, CostPer1kOut: 0.0004},
+	{ID: "deepseek-v3", Name: "DeepSeek V3 (Legacy)", Provider: "deepseek", ContextWindow: 128000, MaxOutput: 8192, SupportsVision: false, CostPer1kIn: 0.00014, CostPer1kOut: 0.00028},
+	{ID: "deepseek-r1", Name: "DeepSeek R1 (Legacy)", Provider: "deepseek", ContextWindow: 128000, MaxOutput: 8192, SupportsVision: false, CostPer1kIn: 0.00055, CostPer1kOut: 0.00219},
+	{ID: "deepseek-r1-zero", Name: "DeepSeek R1 Zero (Legacy)", Provider: "deepseek", ContextWindow: 128000, MaxOutput: 8192, SupportsVision: false, CostPer1kIn: 0.00055, CostPer1kOut: 0.00219},
+	// Qwen（Qwen 3.7 系列为截至 2026 年 6 月最新，1M上下文）
+	{ID: "qwen3.7-max", Name: "Qwen 3.7 Max", Provider: "qwen", ContextWindow: 1000000, MaxOutput: 32768, SupportsVision: false, CostPer1kIn: 0.002, CostPer1kOut: 0.008},
+	{ID: "qwen3.7-plus", Name: "Qwen 3.7 Plus", Provider: "qwen", ContextWindow: 1000000, MaxOutput: 32768, SupportsVision: true, CostPer1kIn: 0.0008, CostPer1kOut: 0.0024},
+	{ID: "qwen3-max", Name: "Qwen 3 Max (Legacy)", Provider: "qwen", ContextWindow: 131072, MaxOutput: 16384, SupportsVision: true, CostPer1kIn: 0.002, CostPer1kOut: 0.006},
+	{ID: "qwen3-plus", Name: "Qwen 3 Plus (Legacy)", Provider: "qwen", ContextWindow: 131072, MaxOutput: 16384, SupportsVision: true, CostPer1kIn: 0.0004, CostPer1kOut: 0.0012},
+	// GLM（GLM-5.2 为截至 2026 年 6 月最新，1M上下文）
+	{ID: "glm-5.2", Name: "GLM-5.2", Provider: "zhipu", ContextWindow: 1000000, MaxOutput: 32768, SupportsVision: true, CostPer1kIn: 0.001, CostPer1kOut: 0.004},
+	{ID: "glm-5v-turbo", Name: "GLM-5V Turbo", Provider: "zhipu", ContextWindow: 256000, MaxOutput: 16384, SupportsVision: true, CostPer1kIn: 0.0005, CostPer1kOut: 0.002},
+	{ID: "glm-5-plus", Name: "GLM-5 Plus (Legacy)", Provider: "zhipu", ContextWindow: 256000, MaxOutput: 8192, SupportsVision: true, CostPer1kIn: 0.01, CostPer1kOut: 0.01},
+	{ID: "glm-5-flash", Name: "GLM-5 Flash (Legacy)", Provider: "zhipu", ContextWindow: 256000, MaxOutput: 8192, SupportsVision: true, CostPer1kIn: 0.001, CostPer1kOut: 0.001},
+	// MiMo（小米，截至 2026 年 6 月最新，编程性价比极高）
+	{ID: "mimo-v2.5-pro", Name: "MiMo V2.5 Pro", Provider: "mimo", ContextWindow: 1000000, MaxOutput: 32768, SupportsVision: true, CostPer1kIn: 0.000003, CostPer1kOut: 0.000003},
 }
 
 // Switcher 模型切换器

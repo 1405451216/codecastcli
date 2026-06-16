@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"codecast/cli/internal/agent"
+	"codecast/cli/internal/util"
 
 	"github.com/fatih/color"
 )
@@ -26,11 +27,30 @@ func expandFileReferences(input string) string {
 	}
 	return fileRefRe.ReplaceAllStringFunc(input, func(match string) string {
 		path := match[1:]
-		content, err := os.ReadFile(path)
+		// R5-C10 修复：验证路径安全性，防止路径遍历攻击
+		absPath, err := filepath.Abs(filepath.Clean(path))
 		if err != nil {
 			return match
 		}
-		ext := filepath.Ext(path)
+		if util.HasUnsafePathSegment(absPath) {
+			return match
+		}
+		// 检查是否为常规文件，拒绝符号链接
+		info, err := os.Lstat(absPath)
+		if err != nil {
+			return match
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return match // 拒绝符号链接
+		}
+		if info.IsDir() {
+			return match // 拒绝目录
+		}
+		content, err := os.ReadFile(absPath)
+		if err != nil {
+			return match
+		}
+		ext := filepath.Ext(absPath)
 		lang := detectLanguageFromExt(ext)
 		truncated := truncateContent(string(content), 4000)
 		return fmt.Sprintf("\n```%s\n// File: %s\n%s\n```\n", lang, path, truncated)

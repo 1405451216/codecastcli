@@ -37,6 +37,9 @@ type PlanTask struct {
 	Description string   `json:"description"`
 	DependsOn   []string `json:"depends_on,omitempty"`
 	Priority    int      `json:"priority"`
+	// ConflictFiles 该任务会读写的文件列表（P2 自动并行）。
+	// 两个无显式依赖的任务若 ConflictFiles 有交集，会被自动加串行依赖。
+	ConflictFiles []string `json:"conflict_files,omitempty"`
 }
 
 // NewOrchestrator 创建编排器
@@ -134,6 +137,8 @@ func (o *Orchestrator) PlanAndExecute(ctx context.Context, task string) (*Execut
 // 最后通过聚合节点汇总所有子任务结果。
 func (o *Orchestrator) ParallelExecute(ctx context.Context, tasks []PlanTask) (*ExecutionResult, error) {
 	builder := ap.NewDAGBuilder("parallel-execute")
+	var cleanupPaths []string
+	var cleanupStores []ap.MemoryStore // COR-09: 跟踪所有 SQLite 存储连接 // C-04: 跟踪临时文件路径
 
 	// DAGView: add Plan Agent node
 	if o.enableVisualization {
@@ -155,10 +160,12 @@ func (o *Orchestrator) ParallelExecute(ctx context.Context, tasks []PlanTask) (*
 		}
 
 		// 每个子任务创建独立的 Agent 实例，使用独立的内存存储
-		isolatedMemory, err := newIsolatedMemory(task.ID)
+		isolatedMemory, dbPath, err := newIsolatedMemory(task.ID)
 		if err != nil {
 			return nil, fmt.Errorf("创建隔离内存失败 (task %s): %w", task.ID, err)
 		}
+		cleanupPaths = append(cleanupPaths, dbPath)
+		cleanupStores = append(cleanupStores, isolatedMemory) // COR-09: 跟踪连接
 		isolatedAgent := ap.NewAgent(
 			fmt.Sprintf("ExecuteAgent_%s", task.ID),
 			execSystemPrompt,
@@ -186,10 +193,12 @@ func (o *Orchestrator) ParallelExecute(ctx context.Context, tasks []PlanTask) (*
 	}
 
 	// 聚合节点：收集所有子任务结果并生成摘要
-	aggregateMemory, err := newIsolatedMemory("aggregate")
+	aggregateMemory, dbPath, err := newIsolatedMemory("aggregate")
 	if err != nil {
 		return nil, fmt.Errorf("创建聚合内存失败: %w", err)
 	}
+	cleanupPaths = append(cleanupPaths, dbPath)
+	cleanupStores = append(cleanupStores, aggregateMemory) // COR-09: 跟踪连接
 	aggregateAgent := ap.NewAgent(
 		"AggregateAgent",
 		aggregateSystemPrompt,
@@ -253,9 +262,11 @@ func (o *Orchestrator) ParallelExecute(ctx context.Context, tasks []PlanTask) (*
 	}
 
 	return &ExecutionResult{
-		DAGResult:  result,
-		Plan:       extractNodeOutput(result, "plan"),
+		DAGResult:   result,
+		Plan:        extractNodeOutput(result, "plan"),
 		Aggregation: extractNodeOutput(result, "aggregate"),
+		cleanupDirs:   cleanupPaths,
+		cleanupStores: cleanupStores,
 	}, nil
 }
 
@@ -274,6 +285,23 @@ type ExecutionResult struct {
 	Plan        string
 	Execution   string
 	Aggregation string
+	cleanupDirs  []string     // C-04: 需要清理的临时数据库文件路径
+	cleanupStores []ap.MemoryStore // COR-09: 需要关闭的 SQLite 存储连接
+}
+
+// Cleanup 清理执行过程中产生的临时文件和连接（C-04 + COR-09 修复）
+func (r *ExecutionResult) Cleanup() {
+	// 先关闭数据库连接，再删除文件
+	for _, store := range r.cleanupStores {
+		if closer, ok := store.(interface{ Close() error }); ok {
+			closer.Close()
+		}
+	}
+	r.cleanupStores = nil
+	for _, dir := range r.cleanupDirs {
+		os.Remove(dir)
+	}
+	r.cleanupDirs = nil
 }
 
 // Summary 返回执行结果摘要
@@ -309,18 +337,19 @@ func extractNodeOutput(result *ap.DAGResult, nodeID string) string {
 // newIsolatedMemory 创建独立的 SQLite 内存存储实例。
 // 使用唯一文件路径避免 cache=shared 模式下的跨实例共享问题，
 // 确保每个子任务的内存完全隔离。
-func newIsolatedMemory(id string) (ap.MemoryStore, error) {
+// C-04 修复：返回 dbPath 供调用方在完成后清理。
+func newIsolatedMemory(id string) (ap.MemoryStore, string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return nil, fmt.Errorf("生成随机 ID 失败: %w", err)
+		return nil, "", fmt.Errorf("生成随机 ID 失败: %w", err)
 	}
 	tmpDir := os.TempDir()
 	dbPath := filepath.Join(tmpDir, fmt.Sprintf("codecast_subagent_%s_%x.db", id, b))
 	store, err := ap.NewSQLiteStore(dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("创建隔离 SQLite 存储失败: %w", err)
+		return nil, "", fmt.Errorf("创建隔离 SQLite 存储失败: %w", err)
 	}
-	return store, nil
+	return store, dbPath, nil
 }
 
 // GetDAGView 返回编排器的 DAGView 实例

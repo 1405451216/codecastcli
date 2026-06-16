@@ -87,6 +87,7 @@ func TestStressContextCancelDuringStream(t *testing.T) {
 
 		ch, err := provider.Stream(ctx, &ap.CompletionRequest{})
 		if err != nil {
+			cancel()
 			t.Fatalf("iteration %d: Stream failed: %v", i, err)
 		}
 
@@ -102,6 +103,7 @@ func TestStressContextCancelDuringStream(t *testing.T) {
 		// 确保 channel 最终关闭
 		for range ch {
 		}
+		cancel()
 	}
 	// 无 panic = pass
 }
@@ -196,7 +198,7 @@ func TestStressDegradationMatrixConcurrent(t *testing.T) {
 
 // TestStressUserFacingErrorConcurrent 并发创建和格式化 UserFacingError
 func TestStressUserFacingErrorConcurrent(t *testing.T) {
-		codes := []errors.ErrorCode{
+	codes := []errors.ErrorCode{
 		errors.ErrProviderNotFound,
 		errors.ErrProviderAuth,
 		errors.ErrBudgetExceeded,

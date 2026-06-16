@@ -8,6 +8,7 @@ sessions/
 # 本地编译产物（release 工作流写到 dist/，源码根的 .exe 是开发期临时产物）
 /codecast.exe
 /codecast.exe~
+/codecast_test.exe
 
 # 临时测试文件
 /test-*.txt

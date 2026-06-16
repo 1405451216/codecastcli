@@ -1,0 +1,125 @@
+# Codecast 语义索引配置示例（P3）
+#
+# 启用方式（~/.codecast/config.yaml）：
+#   semantic_index:
+#     enabled: true
+#     embedding_provider: zhipu          # openai / zhipu / dashscope / mock
+#     embedding_api_key: "your-zhipu-key"  # 为空则复用主 api_key
+#     embedding_model: embedding-3
+#     # state_path: ~/.codecast/semantic_index.json  # 可选，默认即此
+#     max_chunk_lines: 100
+#
+# 启用后在交互模式中使用 /semantic 命令：
+#   /semantic index [path]   索引代码库（默认当前目录）
+#   /semantic query <query>  语义检索代码
+#   /semantic stats          查看索引统计
+#   /semantic clear          清空索引
+#   /semantic help           帮助
+#
+# 工作原理：
+#   1. 按 tree-sitter 符号（函数/类/方法）切块，每块生成 embedding
+#   2. 向量存储（纯 Go 余弦相似度）+ BM25 索引（关键词匹配）
+#   3. 混合检索：向量 0.7 + BM25 0.3 加权融合
+#   4. 增量更新：文件 modtime 变化时只重算该文件
+#   5. 持久化：JSON 格式，零外部依赖（无 CGO/sqlite-vec）
+#
+# Embedding Provider 选择：
+#   - openai:    OpenAI text-embedding-3-small（1536 维，$0.02/1M tokens）
+#   - zhipu:     智谱 embedding-3（2048 维，国内访问快）
+#   - dashscope: 通义 text-embedding-v3（1024 维，阿里云百炼）
+#   - mock:      测试用，字符哈希生成向量，无网络依赖
+#
+# 性能参考（OpenAI text-embedding-3-small）：
+#   - 1000 个 chunk ≈ $0.001
+#   - 索引 1 万行代码 ≈ 30 秒 + $0.01
+#   - 检索延迟 < 50ms（纯本地余弦相似度）
+
+enabled: false  # 默认禁用，显式启用
+
+# Embedding 提供方
+# - openai:    用 OpenAI API（需 api_key）
+# - zhipu:     智谱 BigModel（OpenAI 兼容，国内快）
+# - dashscope: 通义 DashScope（OpenAI 兼容，阿里云）
+# - mock:      测试用，无网络依赖
+embedding_provider: openai
+
+# Embedding 模型名
+# OpenAI 推荐：
+#   - text-embedding-3-small: 1536 维，$0.02/1M tokens（性价比最高）
+#   - text-embedding-3-large: 3072 维，$0.13/1M tokens（精度更高）
+#   - text-embedding-ada-002: 1536 维，$0.10/1M tokens（旧版）
+# 智谱推荐：
+#   - embedding-3: 2048 维（默认）
+#   - embedding-2: 1024 维（旧版，更便宜）
+# 通义推荐：
+#   - text-embedding-v3: 1024 维（默认）
+#   - text-embedding-v2: 1536 维（旧版）
+embedding_model: text-embedding-3-small
+
+# Embedding 专用 API Key（为空则复用主 api_key）
+# 用智谱/通义时建议单独填，因为它们的 key 与主 LLM provider 可能不同
+# embedding_api_key: "your-zhipu-or-dashscope-key"
+
+# Embedding 专用 BaseURL（为空则用 provider 默认值）
+# embedding_base_url: "https://open.bigmodel.cn/api/paas/v4"
+
+# 索引持久化路径（默认 ~/.codecast/semantic_index.json）
+# state_path: ~/.codecast/semantic_index.json
+
+# 单个 chunk 最大行数（超过则截断）
+# 默认 100，大函数会被截断为多个 chunk
+max_chunk_lines: 100
+
+# ===== 国内 Provider 配置示例 =====
+#
+# 智谱（推荐国内用户）：
+#   semantic_index:
+#     enabled: true
+#     embedding_provider: zhipu
+#     embedding_api_key: "your-zhipu-api-key"
+#     embedding_model: embedding-3
+#
+# 通义（阿里云百炼）：
+#   semantic_index:
+#     enabled: true
+#     embedding_provider: dashscope
+#     embedding_api_key: "your-dashscope-api-key"
+#     embedding_model: text-embedding-v3
+#
+# DeepSeek / MiniMax 不支持 embedding API，请用上述 provider 之一。
+
+# ===== 使用示例 =====
+#
+# 1. 首次启用：
+#    $ codecast
+#    > /semantic index
+#    🔍 开始索引: .
+#    ✓ 索引完成 (2.3s)
+#      文件数: 156
+#      向量数: 892
+#      BM25 文档: 892
+#      Embedder: openai:text-embedding-3-small (dim=1536)
+#
+# 2. 语义检索：
+#    > /semantic query "用户认证逻辑"
+#    🔍 检索结果 (query: "用户认证逻辑")
+#    1. [0.8234] internal/auth/login.go:45-78 (hybrid)
+#       符号: handleLogin (function)
+#       签名: func handleLogin(w http.ResponseWriter, r *http.Request)
+#       | func handleLogin(w http.ResponseWriter, r *http.Request) {
+#       |     // 验证用户名密码
+#       |     ...
+#
+# 3. 查看统计：
+#    > /semantic stats
+#    📊 语义索引统计
+#      已索引文件: 156
+#      向量数: 892
+#      BM25 文档: 892
+#      Embedder: openai:text-embedding-3-small
+#      向量维度: 1536
+#
+# ===== 与 RAG 的区别 =====
+# /rag: 索引任意文档（PDF/Markdown/TXT），用 AgentPrimordia Episode 存储
+# /semantic: 专门索引代码，按符号切块 + embedding，支持代码语义检索
+# 两者独立，可同时使用。

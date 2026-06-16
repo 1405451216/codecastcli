@@ -7,10 +7,14 @@ package cmd
 //	/workflow, /undo, /budget, /mcp, /stats 等处理器。
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"codecast/cli/internal/agent"
+	"codecast/cli/internal/benchmark"
 	"codecast/cli/internal/git"
 
 	"github.com/fatih/color"
@@ -357,9 +361,32 @@ func handleRouteCommand(args string, ag *agent.CodecastAgent) {
 		} else {
 			color.HiBlack("  → 无需切换")
 		}
+	case "learning":
+		// P1 L2: 学习型路由统计
+		lr := ag.GetLearningRouter()
+		if lr == nil {
+			color.Yellow("学习型路由未启用。请在 config.yaml 中设置 learning_routing.enabled: true")
+			return
+		}
+		stats := lr.Stats()
+		if len(stats) == 0 {
+			color.Yellow("学习路由暂无数据（需启用并产生若干次调用）")
+			return
+		}
+		color.Cyan("🔀 学习型路由统计 (按评分降序)")
+		fmt.Println()
+		color.HiBlack("  %-25s %-8s %-8s %-8s %-10s %-10s %s",
+			"MODEL", "TIER", "SAMPLES", "SUCCESS", "AVG_COST", "TOTAL_TOK", "SCORE")
+		for _, s := range stats {
+			color.White("  %-25s %-8s %-8d %.2f%%   $%-9.6f %-10d %.4f",
+				s.Name, s.Tier, s.Samples, s.SuccessRate()*100,
+				s.AvgCost(), s.TotalTokens, s.Score())
+		}
+		fmt.Println()
+		color.HiBlack("  评分公式: (1/avgCost) * (0.5 + successRate*0.5)")
 	default:
 		color.Yellow("未知子命令: %s", sub)
-		color.White("可用: /route [on|off|test <input>]")
+		color.White("可用: /route [on|off|test <input>|learning]")
 	}
 }
 
@@ -442,6 +469,339 @@ func printRagHelp() {
 	color.White("  /rag query <query>       查询知识库")
 	color.White("  /rag chat <query>        基于知识库对话")
 	fmt.Println()
+}
+
+// handleSemanticCommand 处理 /semantic 斜杠命令（P3 语义索引）
+//
+// 子命令：
+//   /semantic index [path]   索引代码库（默认当前目录）
+//   /semantic query <query>  语义检索代码
+//   /semantic stats          查看索引统计
+//   /semantic clear          清空索引
+//   /semantic help           帮助
+func handleSemanticCommand(args string, ag *agent.CodecastAgent) {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		printSemanticHelp()
+		return
+	}
+	fields := strings.Fields(args)
+	if len(fields) == 0 {
+		printSemanticHelp()
+		return
+	}
+	sub := fields[0]
+	rest := ""
+	if len(fields) > 1 {
+		rest = strings.TrimSpace(strings.TrimPrefix(args, sub))
+	}
+
+	switch sub {
+	case "index":
+		handleSemanticIndex(ag, rest)
+	case "query", "q":
+		handleSemanticQuery(ag, rest)
+	case "stats":
+		handleSemanticStats(ag)
+	case "clear":
+		handleSemanticClear(ag)
+	case "help", "-h":
+		printSemanticHelp()
+	default:
+		color.Red("未知子命令: %s", sub)
+		printSemanticHelp()
+	}
+}
+
+// handleSemanticIndex 索引代码库
+func handleSemanticIndex(ag *agent.CodecastAgent, path string) {
+	if ag == nil {
+		color.Red("Agent 未初始化")
+		return
+	}
+	si := ag.GetSemanticIndex()
+	if si == nil {
+		color.Red("语义索引未启用。请在 config.yaml 中设置 semantic_index.enabled: true")
+		return
+	}
+
+	target := path
+	if target == "" {
+		target = "."
+	}
+	color.Cyan("🔍 开始索引: %s", target)
+
+	// 切换索引根目录（如果指定了路径）
+	ctx := context.Background()
+	start := time.Now()
+
+	var fileCount, errCount int
+	cb := func(p string, err error) {
+		if err != nil {
+			errCount++
+			color.Yellow("  跳过 %s: %v", p, err)
+			return
+		}
+		fileCount++
+		if fileCount%50 == 0 {
+			color.HiBlack("  已索引 %d 个文件...", fileCount)
+		}
+	}
+
+	// 直接用 IndexDir（基于配置的 RootDir）
+	if err := si.IndexDir(ctx, cb); err != nil {
+		color.Red("索引失败: %v", err)
+		return
+	}
+
+	elapsed := time.Since(start)
+	stats := si.Stats()
+	color.Green("✓ 索引完成 (%s)", elapsed.Round(time.Millisecond))
+	color.White("  文件数: %d", stats.IndexedFiles)
+	color.White("  向量数: %d", stats.VectorCount)
+	color.White("  BM25 文档: %d", stats.BM25DocCount)
+	color.White("  Embedder: %s (dim=%d)", stats.EmbedderName, stats.VectorDim)
+	if errCount > 0 {
+		color.Yellow("  失败文件: %d", errCount)
+	}
+
+	// 持久化
+	if err := si.Save(); err != nil {
+		color.Yellow("⚠ 持久化失败: %v", err)
+	}
+}
+
+// handleSemanticQuery 语义检索
+func handleSemanticQuery(ag *agent.CodecastAgent, query string) {
+	if ag == nil {
+		color.Red("Agent 未初始化")
+		return
+	}
+	if query == "" {
+		color.Yellow("用法: /semantic query <query>")
+		return
+	}
+	si := ag.GetSemanticIndex()
+	if si == nil {
+		color.Red("语义索引未启用。请在 config.yaml 中设置 semantic_index.enabled: true")
+		return
+	}
+	if si.Stats().VectorCount == 0 {
+		color.Yellow("索引为空，请先运行 /semantic index")
+		return
+	}
+
+	ctx := context.Background()
+	results, err := si.Retrieve(ctx, query)
+	if err != nil {
+		color.Red("检索失败: %v", err)
+		return
+	}
+	if len(results) == 0 {
+		color.Yellow("未找到匹配结果")
+		return
+	}
+
+	color.Cyan("🔍 检索结果 (query: %q)", query)
+	fmt.Println()
+	for i, r := range results {
+		color.HiBlack("%d. [%.4f] %s:%d-%d (%s)",
+			i+1, r.Score, r.Chunk.File, r.Chunk.StartLine, r.Chunk.EndLine, r.Source)
+		color.White("   符号: %s (%s)", r.Chunk.Symbol, r.Chunk.Kind)
+		if r.Chunk.Signature != "" {
+			color.HiBlack("   签名: %s", r.Chunk.Signature)
+		}
+		// 显示前 3 行代码预览
+		lines := strings.Split(r.Chunk.Content, "\n")
+		preview := 3
+		if len(lines) < preview {
+			preview = len(lines)
+		}
+		for j := 0; j < preview; j++ {
+			color.HiBlack("   | %s", lines[j])
+		}
+		fmt.Println()
+	}
+}
+
+// handleSemanticStats 索引统计
+func handleSemanticStats(ag *agent.CodecastAgent) {
+	if ag == nil {
+		color.Red("Agent 未初始化")
+		return
+	}
+	si := ag.GetSemanticIndex()
+	if si == nil {
+		color.Yellow("语义索引未启用")
+		return
+	}
+	stats := si.Stats()
+	color.Cyan("📊 语义索引统计")
+	fmt.Println()
+	color.White("  已索引文件: %d", stats.IndexedFiles)
+	color.White("  向量数: %d", stats.VectorCount)
+	color.White("  BM25 文档: %d", stats.BM25DocCount)
+	color.White("  Embedder: %s", stats.EmbedderName)
+	color.White("  向量维度: %d", stats.VectorDim)
+}
+
+// handleSemanticClear 清空索引
+func handleSemanticClear(ag *agent.CodecastAgent) {
+	if ag == nil {
+		color.Red("Agent 未初始化")
+		return
+	}
+	si := ag.GetSemanticIndex()
+	if si == nil {
+		color.Yellow("语义索引未启用")
+		return
+	}
+	si.Clear()
+	color.Green("✓ 索引已清空")
+}
+
+// printSemanticHelp 显示 /semantic 帮助
+func printSemanticHelp() {
+	color.Cyan("🔍 /semantic — 语义索引管理 (P3)")
+	fmt.Println()
+	color.White("用法:")
+	color.White("  /semantic index [path]   索引代码库（默认当前目录）")
+	color.White("  /semantic query <query>  语义检索代码")
+	color.White("  /semantic stats          查看索引统计")
+	color.White("  /semantic clear          清空索引")
+	color.White("  /semantic help           显示此帮助")
+	fmt.Println()
+	color.HiBlack("需在 config.yaml 中启用: semantic_index.enabled: true")
+	color.HiBlack("Embedding provider: openai (默认) / mock (测试)")
+}
+
+// handleBenchmarkCommand 处理 /benchmark 斜杠命令
+//
+// 用法:
+//
+//	/benchmark run [mock|keyword]  运行默认 benchmark 套件
+//	/benchmark list                列出所有任务
+//	/benchmark help                显示帮助
+func handleBenchmarkCommand(args string, ag *agent.CodecastAgent) {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		printBenchmarkHelp()
+		return
+	}
+	fields := strings.Fields(args)
+	if len(fields) == 0 {
+		printBenchmarkHelp()
+		return
+	}
+	sub := fields[0]
+	switch sub {
+	case "run":
+		runnerType := "mock"
+		if len(fields) > 1 {
+			runnerType = fields[1]
+		}
+		runBenchmark(ag, runnerType)
+	case "list":
+		listBenchmarkTasks()
+	case "help", "h":
+		printBenchmarkHelp()
+	default:
+		color.Red("未知子命令: %s", sub)
+		printBenchmarkHelp()
+	}
+}
+
+// runBenchmark 执行 benchmark
+func runBenchmark(ag *agent.CodecastAgent, runnerType string) {
+	var runner benchmark.Runner
+	switch runnerType {
+	case "mock":
+		runner = benchmark.NewMockRunner(time.Now().UnixNano(), 0.8)
+	case "keyword":
+		runner = benchmark.KeywordMatchRunner{}
+	default:
+		color.Red("未知 runner: %s (支持: mock, keyword)", runnerType)
+		return
+	}
+	color.Cyan("🏃 运行 benchmark (runner=%s, tasks=%d)", runner.Name(), len(benchmark.DefaultTasks))
+	fmt.Println()
+
+	suite := benchmark.NewDefaultSuite(runner)
+	ctx := context.Background()
+	results := suite.Run(ctx)
+
+	report := benchmark.GenerateReport(runner.Name(), results)
+
+	// 打印摘要
+	color.Cyan("━━━ Summary ━━━")
+	color.White("  成功率: %.2f%% (%d/%d)", report.Summary.SuccessRate*100, report.Summary.SuccessCount, report.Summary.TotalTasks)
+	color.White("  平均时延: %dms", report.Summary.AvgLatencyMs)
+	color.White("  P95 时延: %dms", report.Summary.P95LatencyMs)
+	color.White("  总 token: %d", report.Summary.TotalTokens)
+	color.White("  总成本: $%.4f", report.Summary.TotalCostUSD)
+	color.White("  总工具调用: %d", report.Summary.TotalToolCalls)
+	fmt.Println()
+
+	// 打印明细
+	color.Cyan("━━━ Details ━━━")
+	for _, r := range results {
+		status := color.RedString("✗")
+		if r.Metrics.Success {
+			status = color.GreenString("✓")
+		}
+		errMsg := r.Metrics.Error
+		if len(errMsg) > 40 {
+			errMsg = errMsg[:40] + "..."
+		}
+		color.White("  %s %-12s %4dms  %5d tok  $%.4f  %d tools  %s",
+			status, r.TaskID, r.Metrics.LatencyMs, r.Metrics.TokensUsed,
+			r.Metrics.CostUSD, r.Metrics.ToolCalls, errMsg)
+	}
+	fmt.Println()
+
+	// 保存报告
+	reportDir := ".codecast/benchmark"
+	osMkdirAll(reportDir)
+	jsonPath := reportDir + "/report.json"
+	mdPath := reportDir + "/report.md"
+	if err := report.SaveJSON(jsonPath); err == nil {
+		color.HiBlack("JSON 报告: %s", jsonPath)
+	}
+	if err := report.SaveMarkdown(mdPath); err == nil {
+		color.HiBlack("Markdown 报告: %s", mdPath)
+	}
+}
+
+// listBenchmarkTasks 列出所有 benchmark 任务
+func listBenchmarkTasks() {
+	color.Cyan("📋 Benchmark 任务集 (%d 个)", len(benchmark.DefaultTasks))
+	fmt.Println()
+	color.White("%-12s %-12s %-10s %s", "ID", "Type", "Diff", "Description")
+	color.HiBlack("─────────────────────────────────────────────────────────")
+	for _, t := range benchmark.DefaultTasks {
+		color.White("%-12s %-12s %-10s %s", t.ID, t.Type, t.Difficulty, t.Description)
+	}
+}
+
+// printBenchmarkHelp 显示 /benchmark 帮助
+func printBenchmarkHelp() {
+	color.Cyan("📊 /benchmark — 自建评估框架 (P0)")
+	fmt.Println()
+	color.White("用法:")
+	color.White("  /benchmark run [mock|keyword]  运行默认 benchmark 套件")
+	color.White("  /benchmark list                列出所有任务")
+	color.White("  /benchmark help                显示此帮助")
+	fmt.Println()
+	color.HiBlack("任务集: 5 类 × 3 难度 = 15 个任务")
+	color.HiBlack("  类型: question / edit / refactor / debug / multi-file")
+	color.HiBlack("  难度: easy / medium / hard")
+	color.HiBlack("指标: 成功率 / 时延 / token / 成本 / 工具调用数")
+	color.HiBlack("报告: .codecast/benchmark/report.{json,md}")
+}
+
+// osMkdirAll 创建目录
+func osMkdirAll(dir string) {
+	_ = os.MkdirAll(dir, 0755)
 }
 
 // handleSandboxCommand 处理 /sandbox 斜杠命令

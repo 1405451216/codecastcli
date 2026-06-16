@@ -11,62 +11,105 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"codecast/cli/internal/version"
+	"golang.org/x/sys/windows"
+	"golang.org/x/term"
 )
 
-// Splash 启动动画
+// ─── 调色板 ────────────────────────────────────────────────────
+// 紫→青品牌色，保留 MiMo 风格暗底
+var palette = struct {
+	purple  string // #8b5cf6 亮紫
+	violet  string // #a855f7 紫
+	cyan    string // #06b6d4 青
+	teal    string // #14b8a6 青绿
+	white   string
+	dim     string // 中灰
+	muted   string // 灰
+	subtle  string // 深灰
+	lineDim string // 最暗灰（框线）
+	reset   string
+}{
+	purple:  "\033[38;2;139;92;246m",
+	violet:  "\033[38;2;168;85;247m",
+	cyan:    "\033[38;2;6;182;212m",
+	teal:    "\033[38;2;20;184;166m",
+	white:   "\033[38;2;249;250;251m",
+	dim:     "\033[38;2;75;85;99m",
+	muted:   "\033[38;2;107;114;128m",
+	subtle:  "\033[38;2;55;65;81m",
+	lineDim: "\033[38;2;31;41;55m",
+	reset:   "\033[0m",
+}
+
+// ─── 像素艺术 Logo：CODECAST（8 字母 × 每行 76 字符）────────
+// 每个字母 8 字符宽 + 1 空格间隔，7 行主体 + 1 行底座
+// 使用纯方块字符 █ 和 ░，确保所有终端 100% 兼容
+var logoLines = []string{
+	//  1         2         3         4         5         6         7
+	// 123456789012345678901234567890123456789012345678901234567890123456789012345678
+	"   ██████   ████████   ██████   ████████   ██████   ██████   ████████   ██████   ", // C O D E C A S T
+	"  ████████ ███     ██ ████████ ███     ██ ████████ ████████ ████████   ████████  ",
+	" ███░░░░██ ███   ████ ███░░███ ███        ███░░░░█ ███░░░░█ ███░████   ███░░░░█  ",
+	" ███       ██████████ ███   ██ ████████   ███      ███████  ███   ██   ████████  ",
+	" ███░█████ ███░░░░███ ███░░███ ███░░░░█   ███░████ ███░░░░█ ███░░████  ███░████  ",
+	" ███   ███ ███    ███ ███  ███ ███   ███  ███   ██ ███   ██ ███    ██  ███  ███  ",
+	" ████████  ███    ███ ████████ █████████  ████████ ████████ ███    ███ ████████  ",
+	"  ██████   ███    ███  ██████   ████████   ██████   ██████  ███     ██  ██████   ",
+}
+
+// 每行颜色（紫→青渐变）
+var logoLineColors = []string{
+	palette.violet,
+	palette.purple,
+	palette.purple,
+	palette.violet,
+	palette.cyan,
+	palette.cyan,
+	palette.teal,
+	palette.teal,
+}
+
+// ─── Splash 结构体 ─────────────────────────────────────────────
 type Splash struct {
-	logo       string
-	tagline    string
 	version    string
-	nodes      []node
 	width      int
 	height     int
 	done       chan struct{}
-	// startOnce 只保护 goroutine 启动，确保 RunAsync 只启动一次
 	startOnce  sync.Once
-	// finishOnce 保护 Finish 的 close(done) 也只执行一次
 	finishOnce sync.Once
 	frameDelay time.Duration
-	// 上一次节点位置（用于差异绘制，避免闪屏）
-	prevNodeX []int
-	prevNodeY []int
-	// LOGO 区域（一次绘制，不再重绘）
-	logoY     int
-	logoStart int
-	tagStart  int
-	verStart  int
-	staticDrawn bool
+
+	stars []star
+	tag   string
 }
 
-type node struct {
-	x, y     int
-	char     rune
-	speed    float64
-	phase    float64
-	color    byte // 0=purple, 1=cyan, 2=magenta
+type star struct {
+	x, y       int
+	brightness int
+	char       rune
 }
 
-// DefaultSplash 创建默认的 Codecast 启动动画
+// ─── 公开 API ──────────────────────────────────────────────────
+
 func DefaultSplash() *Splash {
 	s := &Splash{
-		logo:       "CODECAST",
-		tagline:    "AI-POWERED TERMINAL AGENT",
-		version:    "v0.1.0",
+		version:    version.ShortVersion(),
+		tag:        "AI-POWERED TERMINAL AGENT",
 		done:       make(chan struct{}),
-		frameDelay: 80 * time.Millisecond,
+		frameDelay: 100 * time.Millisecond,
 	}
 	s.detectSize()
-	s.initNodes()
+	s.initStars()
 	return s
 }
 
-// Run 运行启动动画，阻塞直到动画完成
 func (s *Splash) Run() {
 	s.RunAsync()
 	<-s.done
 }
 
-// RunFor 运行启动动画 N 帧后自动结束（用于测试和 Headless 模式）
 func (s *Splash) RunFor(frames int) {
 	s.startOnce.Do(func() {
 		go s.renderLoopN(frames)
@@ -74,244 +117,292 @@ func (s *Splash) RunFor(frames int) {
 	<-s.done
 }
 
-// RunAsync 异步运行启动动画
+// RunAsync 启动动画循环（只渲染一帧 logo + 星空静态）
 func (s *Splash) RunAsync() {
 	s.startOnce.Do(func() {
+		// C-05 修复：Windows 平台启用虚拟终端处理（VTP）
+		if runtime.GOOS == "windows" {
+			enableWindowsVTP()
+		}
 		go s.renderLoop()
 		go s.signalHandler()
 	})
 }
 
-// Wait 等待动画完成
+// enableWindowsVTP 在 Windows 上启用虚拟终端处理，使 ANSI 转义序列生效
+func enableWindowsVTP() {
+	stdout := windows.Handle(os.Stdout.Fd())
+	var mode uint32
+	if err := windows.GetConsoleMode(stdout, &mode); err == nil {
+		// 启用虚拟终端处理标志
+		windows.SetConsoleMode(stdout, mode|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+	}
+}
+
 func (s *Splash) Wait() {
 	<-s.done
 }
 
-// renderLoopN 渲染 N 帧后自动结束
-func (s *Splash) renderLoopN(frames int) {
-	ticker := time.NewTicker(s.frameDelay)
-	defer ticker.Stop()
-
-	for i := 0; i < frames; i++ {
-		s.render(i)
-		<-ticker.C
-	}
-	s.Finish()
+// Finish 优雅结束动画，清屏恢复光标
+func (s *Splash) Finish() {
+	s.finishOnce.Do(func() {
+		close(s.done)
+		// 使用硬重置序列 + 光标恢复，彻底清理
+		fmt.Print("\033[?25h") // 光标恢复
+		fmt.Print("\033[2J")   // 清屏
+		fmt.Print("\033[H")    // 光标回左上角
+	})
 }
 
+// ─── 内部实现 ──────────────────────────────────────────────────
+
 func (s *Splash) detectSize() {
-	w, h := 80, 24
-	if runtime.GOOS != "windows" {
-		w, h, _ = getTerminalSize()
+	w, h := 80, 28
+	// C-03/C-04 修复：使用 golang.org/x/term 获取真实终端尺寸，支持所有平台
+	if width, height, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
+		w, h = width, height
 	}
-	if w < 40 {
+	if w < 76 {
 		w = 80
 	}
-	if h < 12 {
-		h = 24
+	if h < 20 {
+		h = 28
 	}
 	s.width = w
 	s.height = h
 }
 
-func (s *Splash) initNodes() {
-	numNodes := 3
-	s.nodes = make([]node, numNodes)
-	s.prevNodeX = make([]int, numNodes)
-	s.prevNodeY = make([]int, numNodes)
-	// 3 个节点：左上、右上、底部
-	positions := []struct{ x, y int }{
-		{s.width / 4, 3},
-		{3 * s.width / 4, 3},
-		{s.width / 2, s.height - 2},
-	}
-	for i := 0; i < numNodes; i++ {
-		s.nodes[i] = node{
-			x:     positions[i].x,
-			y:     positions[i].y,
-			char:  []rune("●○◉")[i],
-			speed: 0.3 + rand.Float64()*0.4,
-			phase: rand.Float64() * math.Pi * 2,
-			color: byte(i),
+// initStars 初始化星空（避开 logo 区域）
+func (s *Splash) initStars() {
+	logoTop := s.height/2 - 5
+	logoBot := s.height/2 + 4
+	s.stars = make([]star, 40)
+	for i := range s.stars {
+		x := rand.Intn(s.width-2) + 1
+		y := rand.Intn(s.height-3) + 1
+		// 如果落在 logo 区域，推到上方
+		if y >= logoTop && y <= logoBot {
+			y = rand.Intn(logoTop - 2)
+			if y < 1 {
+				y = 1
+			}
 		}
-		s.prevNodeX[i] = positions[i].x
-		s.prevNodeY[i] = positions[i].y
+		// 星星字符：只用简单的 * · +，避免 Unicode 渲染问题
+		chars := []rune{'*', '·', '+', '.', '*'}
+		s.stars[i] = star{
+			x:          x,
+			y:          y,
+			brightness: rand.Intn(3), // 0=暗 1=中 2=亮
+			char:       chars[rand.Intn(len(chars))],
+		}
 	}
-	// 预计算 LOGO 位置
-	s.logoY = s.height / 2
-	s.logoStart = (s.width - len(s.logo)) / 2
-	s.tagStart = (s.width - len(s.tagline)) / 2
-	s.verStart = (s.width - len(s.version)) / 2
 }
 
+// renderLoop 动画主循环：Logo 渐入（前 12 帧），之后保持静态但星星偶尔闪烁
 func (s *Splash) renderLoop() {
-	frameTime := 80 * time.Millisecond
-	ticker := time.NewTicker(frameTime)
-	defer ticker.Stop()
-
 	frame := 0
 	for {
 		select {
 		case <-s.done:
 			return
-		case <-ticker.C:
-			s.render(frame)
-			frame++
+		default:
 		}
+
+		s.render(frame)
+		time.Sleep(s.frameDelay)
+		frame++
 	}
 }
 
+func (s *Splash) renderLoopN(frames int) {
+	for i := 0; i < frames; i++ {
+		s.render(i)
+		time.Sleep(s.frameDelay)
+	}
+	s.Finish()
+}
+
+// render 绘制一帧
 func (s *Splash) render(frame int) {
-	if !s.staticDrawn {
-		s.drawStatic()
-		s.staticDrawn = true
+	// 清屏：用硬重置（比 \033[2J 在 Windows 更可靠）
+	fmt.Print("\033[?25l") // 光标隐藏
+	fmt.Print("\033[H")    // 光标回左上角
+	// 用空格覆盖整屏（比 ANSI 清屏更可靠）
+	for y := 1; y <= s.height; y++ {
+		fmt.Printf("\033[%d;1H%s", y, strings.Repeat(" ", s.width))
 	}
-	s.drawNodes(frame)
-}
 
-// drawStatic 一次性绘制 LOGO 区域，之后不再重绘
-func (s *Splash) drawStatic() {
-	fmt.Print("\033[2J\033[H") // 清屏
-	fmt.Print("\033[?25l")     // 隐藏光标
-
-	// 顶部空行
-	for y := 0; y < s.logoY-1; y++ {
-		fmt.Print("\n")
+	logoHeight := len(logoLines)       // 8 行
+	logoWidth := 0                      // 每行实际宽度
+	for _, line := range logoLines {
+		if len(line) > logoWidth {
+			logoWidth = len(line)
+		}
 	}
-	// LOGO 行
-	fmt.Print("\033[38;2;99;102;241m")
-	fmt.Print(strings.Repeat(" ", s.logoStart))
-	fmt.Print(s.logo)
-	fmt.Print("\033[0m\n")
-	// Tagline 行
-	fmt.Print(strings.Repeat(" ", s.tagStart))
-	fmt.Print("\033[38;2;139;92;246m")
-	fmt.Print(s.tagline)
-	fmt.Print("\033[0m\n")
-	// Version 行
-	fmt.Print(strings.Repeat(" ", s.verStart))
-	fmt.Print("\033[38;2;99;99;99m")
-	fmt.Print(s.version)
-	fmt.Print("\033[0m")
-}
+	logoTop := s.height/2 - logoHeight/2 - 2
+	if logoTop < 1 {
+		logoTop = 1
+	}
+	logoStart := (s.width - logoWidth) / 2
+	if logoStart < 0 {
+		logoStart = 0
+	}
 
-// drawNodes 增量绘制节点（只在变化位置操作光标）
-func (s *Splash) drawNodes(frame int) {
-	for _, n := range s.nodes {
-		// 节点原地脉冲（不移动位置，避免 PowerShell 渲染问题）
-		nx := n.x
-		ny := n.y
-
-		// 跳过 LOGO 区域
-		if ny == s.logoY || ny == s.logoY+1 || ny == s.logoY+2 {
-			if nx >= s.logoStart-1 && nx <= s.logoStart+len(s.logo)+1 {
-				continue
-			}
+	// ═══════ 星空（背景层，先画）═══════
+	for _, st := range s.stars {
+		// 根据 frame 做缓慢闪烁（每 6 帧改变一次）
+		phase := (frame + st.y) % 8
+		visible := true
+		if st.brightness == 0 && phase > 2 {
+			visible = false
+		}
+		if st.brightness == 1 && phase > 5 {
+			visible = false
+		}
+		if !visible {
+			continue
 		}
 
-		// 脉冲效果（字符在 ●/○ 之间切换 + 颜色亮度）
-		pulse := (math.Sin(float64(frame)*n.speed*0.2 + n.phase) + 1) / 2
-		var ch rune
-		if pulse > 0.7 {
-			ch = '●'
-		} else {
-			ch = '○'
-		}
-
-		// ANSI 颜色（按节点 color 字段 + 脉冲亮度）
 		var color string
-		switch n.color {
+		switch st.brightness {
 		case 0:
-			if pulse > 0.5 {
-				color = "\033[38;2;99;102;241m"  // 亮紫
-			} else {
-				color = "\033[38;2;60;60;90m"    // 暗紫
-			}
+			color = palette.subtle
 		case 1:
-			if pulse > 0.5 {
-				color = "\033[38;2;6;182;212m"   // 亮青
+			color = palette.muted
+		default:
+			if phase < 3 {
+				color = palette.white
 			} else {
-				color = "\033[38;2;40;70;80m"    // 暗青
-			}
-		case 2:
-			if pulse > 0.5 {
-				color = "\033[38;2;217;70;239m"  // 亮品红
-			} else {
-				color = "\033[38;2;80;40;90m"    // 暗品红
+				color = palette.muted
 			}
 		}
-		// 移动光标到节点位置并打印
-		fmt.Printf("\033[%d;%dH%s%c\033[0m", ny+1, nx+1, color, ch)
+		fmt.Printf("\033[%d;%dH%s%c", st.y, st.x, color, st.char)
 	}
-	// 光标移到底部
+
+	// ═══════ Logo（前景层）═══════
+	// Logo 渐入：前 12 帧从左到右逐字符显现
+	for i, line := range logoLines {
+		y := logoTop + i
+		if y < 1 || y > s.height {
+			continue
+		}
+		color := logoLineColors[i]
+
+		if frame < 12 {
+			// 渐入模式：按 alpha 决定显示多少
+			alpha := float64(frame) / 12.0
+			showChars := int(float64(len(line)) * alpha)
+			if showChars < 0 {
+				showChars = 0
+			}
+			// 前几帧用暗色，后几帧用主色
+			if frame < 6 {
+				color = palette.subtle
+			}
+			if showChars > len(line) {
+				showChars = len(line)
+			}
+			fmt.Printf("\033[%d;%dH%s%s", y, logoStart+1, color, line[:showChars])
+		} else {
+			// 正常显示
+			fmt.Printf("\033[%d;%dH%s%s", y, logoStart+1, color, line)
+		}
+	}
+
+	// ═══════ 右上角：AgentPrimordia ═══════
+	brand := "AgentPrimordia"
+	brandX := s.width - len(brand) - 2
+	if brandX < 1 {
+		brandX = 1
+	}
+	fmt.Printf("\033[1;%dH%s%s", brandX, palette.subtle, brand)
+
+	// ═══════ Tagline（Logo 下方两行）═══════
+	tagY := logoTop + logoHeight + 2
+	tagWidth := len(s.tag) + 4 // 加左右 padding
+	tagStart := (s.width - tagWidth) / 2
+	if tagStart < 1 {
+		tagStart = 1
+	}
+	// 顶部装饰线
+	fmt.Printf("\033[%d;%dH%s%s", tagY, tagStart, palette.lineDim,
+		"┌"+strings.Repeat("─", tagWidth-2)+"┐")
+	// 中间 tag
+	fmt.Printf("\033[%d;%dH%s│%s %s%s│%s",
+		tagY+1, tagStart, palette.lineDim, palette.cyan, s.tag, palette.lineDim, palette.reset)
+	// 底部装饰线
+	fmt.Printf("\033[%d;%dH%s%s", tagY+2, tagStart, palette.lineDim,
+		"└"+strings.Repeat("─", tagWidth-2)+"┘")
+
+	// ═══════ 提示行 ═══════
+	hintY := tagY + 4
+	if hintY > s.height-3 {
+		hintY = s.height - 3
+	}
+	fmt.Printf("\033[%d;1H%s  按 Enter 开始，或输入 /help 查看命令", hintY, palette.dim)
+
+	// ═══════ 状态栏 ═══════
+	statusY := s.height - 1
+	cwd, _ := os.Getwd()
+	if len(cwd) > 30 {
+		cwd = "..." + cwd[len(cwd)-27:]
+	}
+	fmt.Printf("\033[%d;1H%s%s", statusY, palette.subtle, cwd)
+
+	verX := s.width - len(s.version) - 3
+	if verX < 1 {
+		verX = 1
+	}
+	fmt.Printf("\033[%d;%dH%s%s", statusY, verX, palette.muted, s.version)
+
+	// 光标移到最下面第一列（避免闪烁）
 	fmt.Printf("\033[%d;1H", s.height)
 }
 
-// signalHandler 监听 OS 信号，被取消时退出。
-//
-// v0.2.0 修复：原实现永久阻塞在 <-sigChan（测试环境不会发信号），
-// 导致信号 goroutine 永远占用，且无法唤醒 done。
-// 现改为 select 同时监听 sigChan 和 s.done，s.done 被关闭时立即退出。
+// signalHandler 监听 OS 信号
 func (s *Splash) signalHandler() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 	select {
 	case <-sigChan:
-		// 用户按 Ctrl+C / SIGTERM → 关闭 splash
 		s.Finish()
+		os.Exit(1)
 	case <-s.done:
-		// 已被 Finish 关闭 → 直接退出
 	}
 }
 
-// Finish 优雅结束动画。
-//
-// v0.2.0 修复：原实现使用 sync.Once，但这个 once 与 RunAsync 启动
-// goroutine 的 once 共享，导致 RunAsync 先调用后 Finish 的 once
-// 永远不触发，splash 永远不停。
-// 现在 Finish 使用独立的 finishOnce，确保每次调用都有效。
-//
-// 另外：close(s.done) 后，所有监听 s.done 的 goroutine 都会被唤醒，
-// 包括 renderLoop 和 signalHandler，从而让所有后台任务自然退出。
-func (s *Splash) Finish() {
-	s.finishOnce.Do(func() {
-		close(s.done)
-		// 恢复光标，清屏
-		fmt.Print("\033[?25h\033[2J\033[H")
-		fmt.Println()
-	})
-}
-
-// getTerminalSize 获取终端尺寸（Unix）
 func getTerminalSize() (int, int, error) {
-	// Windows 下返回默认值
-	return 80, 24, nil
+	return 80, 28, nil
 }
 
-// PrintBanner 简化版：一次性打印启动横幅（无动画）
-func PrintBanner(version string) {
+// ─── 简化版 Banner（headless 模式）──────────────────────────
+
+func PrintBanner(ver string) {
 	fmt.Println()
-	logo := `
-  ██████╗ ██╗   ██╗███╗   ██╗██╗  ██╗███████╗██████╗
- ██╔════╝ ██║   ██║████╗  ██║██║ ██╔╝██╔════╝██╔══██╗
- ██║      ██║   ██║██╔██╗ ██║█████╔╝ █████╗  ██████╔╝
- ██║      ██║   ██║██║╚██╗██║██╔═██╗ ██╔══╝  ██╔══██╗
- ╚██████╗ ╚██████╔╝██║ ╚████║██║  ██╗███████╗██║  ██║
-  ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝`
-
-	tagline := "  AI-POWERED TERMINAL AGENT"
-	line := strings.Repeat("─", 60)
-
-	fmt.Print("\033[38;2;99;102;241m") // 紫色
-	fmt.Println(logo)
-	fmt.Print("\033[38;2;168;85;247m") // 紫色
-	fmt.Println(tagline)
-	fmt.Print("\033[0m")             // 重置
-	fmt.Println(line)
-	fmt.Printf("  Version:  %s\n", version)
-	fmt.Printf("  Provider: OpenAI\n")
-	fmt.Printf("  Framework: AgentPrimordia\n")
-	fmt.Println(line)
+	for i, line := range logoLines {
+		pad := (80 - len(line)) / 2
+		if pad < 0 {
+			pad = 0
+		}
+		fmt.Print(strings.Repeat(" ", pad))
+		fmt.Print(logoLineColors[i])
+		fmt.Println(line)
+	}
+	fmt.Println(palette.reset)
+	tag := "AI-POWERED TERMINAL AGENT"
+	pad := (80 - len(tag)) / 2
+	if pad < 0 {
+		pad = 0
+	}
+	fmt.Print(strings.Repeat(" ", pad))
+	fmt.Print(palette.cyan)
+	fmt.Println(tag)
+	fmt.Println(palette.reset)
+	fmt.Printf("  Version:    %s\n", ver)
+	fmt.Printf("  Framework:  AgentPrimordia\n")
 	fmt.Println()
 }
+
+// 保留 math 引用以避免 unused warning（后续如果需要正弦动画）
+var _ = math.Sin

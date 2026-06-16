@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	ap "agentprimordia/pkg"
+	"codecast/cli/internal/util"
 )
 
 // 默认 ripgrep 二进制名（通过 exec.LookPath 查找）。
@@ -128,6 +129,10 @@ func (t *GrepSearchTool) Execute(ctx context.Context, args json.RawMessage) (*ap
 
 	if params.Path == "" {
 		params.Path = "."
+	}
+	// S-04 / M-06 修复：路径遍历防护
+	if util.HasUnsafePathSegment(params.Path) {
+		return ap.NewToolErrorResult(fmt.Sprintf("路径不安全: %q 含 \"..\" 段或指向根目录", params.Path)), nil
 	}
 	if params.MaxResults <= 0 {
 		params.MaxResults = 50
