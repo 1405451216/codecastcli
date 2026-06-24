@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"codecast/cli/internal/config"
@@ -27,58 +26,36 @@ type Manager struct {
 	ownsDB bool // 若为 true，Close 时关闭 db；否则只是解引用（F-05）
 }
 
-// C-09 修复：添加全局锁保护 sharedDB 的并发访问
-var (
-	sharedDB   *sql.DB
-	sharedDBMu sync.RWMutex
-)
-
-// SetSharedDB 注入共享 DB（F-05）。通常由 agent.New() 在初始化时调用。
-// C-09 修复：使用写锁保护
-func SetSharedDB(db *sql.DB) {
-	sharedDBMu.Lock()
-	defer sharedDBMu.Unlock()
-	sharedDB = db
-}
-
-// GetSharedDB 返回当前注入的共享 DB，可能为 nil。
-// C-09 修复：使用读锁保护
-func GetSharedDB() *sql.DB {
-	sharedDBMu.RLock()
-	defer sharedDBMu.RUnlock()
-	return sharedDB
-}
-
 // NewManager 创建会话管理器。
-// 若显式传入 db != nil，优先使用调用方的连接；
-// 否则退回到进程级 sharedDB（F-05）；
-// 都没有时才自己打开 ~/.codecast/memory.db。
+// 优先使用显式传入的 db；为空时回退到 GetSharedDB() 注入的共享连接；
+// 仍为空时自行打开 ~/.codecast/memory.db。
+// 这样的三段式让 agent 在启动时一次性 SetSharedDB，下游调用方可零参数使用。
 func NewManager(db ...*sql.DB) (*Manager, error) {
-	// 优先级：显式参数 > 进程级共享 > 自开
-	var mgr *Manager
-	if len(db) > 0 && db[0] != nil {
-		mgr = &Manager{db: db[0], ownsDB: false}
-	} else {
-		// C-09 修复：使用读锁保护 sharedDB 访问
-		sharedDBMu.RLock()
-		shared := sharedDB
-		sharedDBMu.RUnlock()
-		
-		if shared != nil {
-			mgr = &Manager{db: shared, ownsDB: false}
-		} else {
-			configDir := config.GetConfigDir()
-			if err := os.MkdirAll(configDir, 0700); err != nil {
-				return nil, fmt.Errorf("创建配置目录失败: %w", err)
-			}
+	var explicit *sql.DB
+	if len(db) > 0 {
+		explicit = db[0]
+	}
 
-			dbPath := filepath.Join(configDir, "memory.db")
-			opened, err := sql.Open("sqlite", dbPath)
-			if err != nil {
-				return nil, fmt.Errorf("打开记忆数据库失败: %w", err)
-			}
-			mgr = &Manager{db: opened, ownsDB: true}
+	var mgr *Manager
+	switch {
+	case explicit != nil:
+		mgr = &Manager{db: explicit, ownsDB: false}
+	default:
+		// 回退到 SetSharedDB 注入的进程级共享连接
+		if shared := GetSharedDB(); shared != nil {
+			mgr = &Manager{db: shared, ownsDB: false}
+			break
 		}
+		configDir := config.GetConfigDir()
+		if err := os.MkdirAll(configDir, 0700); err != nil {
+			return nil, fmt.Errorf("创建配置目录失败: %w", err)
+		}
+		dbPath := filepath.Join(configDir, "memory.db")
+		opened, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("打开记忆数据库失败: %w", err)
+		}
+		mgr = &Manager{db: opened, ownsDB: true}
 	}
 
 	// R5-C7 修复：确保 episodes 表存在（session.Manager 独立使用时，AgentPrimordia 可能尚未创建）
@@ -199,4 +176,20 @@ type Message struct {
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// sharedDB 进程级共享 DB 连接（由 agent 在启动时通过 SetSharedDB 注入）。
+// 仅作 fallback 路径：当调用方没有显式传入 db 时，GetSharedDB 返回该连接。
+var sharedDB *sql.DB
+
+// SetSharedDB 注入进程级共享 SQLite 连接，供未显式传入 db 的调用方使用。
+// 通常在 CodecastAgent 启动时（newAgent）调用一次。
+// 传 nil 可清除旧引用（用于测试/重置）。
+func SetSharedDB(db *sql.DB) {
+	sharedDB = db
+}
+
+// GetSharedDB 返回通过 SetSharedDB 注入的共享连接，未注入时返回 nil。
+func GetSharedDB() *sql.DB {
+	return sharedDB
 }
