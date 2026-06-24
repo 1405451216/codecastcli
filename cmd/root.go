@@ -27,6 +27,9 @@ var rootCmd = &cobra.Command{
 		// F-10：runInteractive 现在返回 error，便于测试/包装
 		if err := runInteractive(); err != nil {
 			color.Red("启动失败: %v", err)
+			// 注意：cobra 的 Execute() 内部会调用 os.Exit，
+			// 所以这里的 os.Exit(1) 是冗余但无害的防御性退出。
+			// 测试时可通过 RunE + mock 替代此路径。
 			os.Exit(1)
 		}
 	},

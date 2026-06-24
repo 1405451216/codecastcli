@@ -50,14 +50,22 @@ func NewOrchestrator(cfg *config.Config, registry *ap.ToolRegistry, memory ap.Me
 	}
 
 	// Plan-Agent: 负责分析任务、制定计划
-	planAgent := ap.NewAgent("PlanAgent", planSystemPrompt, llmProvider,
+	planAgentCap, err := ap.NewAgent("PlanAgent", planSystemPrompt, llmProvider,
 		ap.WithMaxTurns(5),
-	).WithToolkit(registry).WithMemory(memory)
+	)
+	if err != nil {
+		return nil, fmt.Errorf("创建 PlanAgent 失败: %w", err)
+	}
+	planAgent := planAgentCap.WithToolkit(registry).WithMemory(memory)
 
 	// Execute-Agent: 负责执行具体任务
-	execAgent := ap.NewAgent("ExecuteAgent", execSystemPrompt, llmProvider,
+	execAgentCap, err := ap.NewAgent("ExecuteAgent", execSystemPrompt, llmProvider,
 		ap.WithMaxTurns(15),
-	).WithToolkit(registry).WithMemory(memory)
+	)
+	if err != nil {
+		return nil, fmt.Errorf("创建 ExecuteAgent 失败: %w", err)
+	}
+	execAgent := execAgentCap.WithToolkit(registry).WithMemory(memory)
 
 	return &Orchestrator{
 		config:             cfg,
@@ -166,12 +174,16 @@ func (o *Orchestrator) ParallelExecute(ctx context.Context, tasks []PlanTask) (*
 		}
 		cleanupPaths = append(cleanupPaths, dbPath)
 		cleanupStores = append(cleanupStores, isolatedMemory) // COR-09: 跟踪连接
-		isolatedAgent := ap.NewAgent(
+		isolatedAgentCap, err := ap.NewAgent(
 			fmt.Sprintf("ExecuteAgent_%s", task.ID),
 			execSystemPrompt,
 			o.llmProvider,
 			ap.WithMaxTurns(15),
-		).WithToolkit(o.registry).WithMemory(isolatedMemory)
+		)
+		if err != nil {
+			return nil, fmt.Errorf("创建隔离 Agent 失败 (task %s): %w", task.ID, err)
+		}
+		isolatedAgent := isolatedAgentCap.WithToolkit(o.registry).WithMemory(isolatedMemory)
 
 		delegateNode := ap.NewAgentDelegateNode(nodeID, isolatedAgent)
 		builder.NodeWithAgent(nodeID, delegateNode)
@@ -199,12 +211,16 @@ func (o *Orchestrator) ParallelExecute(ctx context.Context, tasks []PlanTask) (*
 	}
 	cleanupPaths = append(cleanupPaths, dbPath)
 	cleanupStores = append(cleanupStores, aggregateMemory) // COR-09: 跟踪连接
-	aggregateAgent := ap.NewAgent(
+	aggregateAgentCap, err := ap.NewAgent(
 		"AggregateAgent",
 		aggregateSystemPrompt,
 		o.llmProvider,
 		ap.WithMaxTurns(3),
-	).WithToolkit(o.registry).WithMemory(aggregateMemory)
+	)
+	if err != nil {
+		return nil, fmt.Errorf("创建 AggregateAgent 失败: %w", err)
+	}
+	aggregateAgent := aggregateAgentCap.WithToolkit(o.registry).WithMemory(aggregateMemory)
 
 	aggregateNode := ap.NewAgentDelegateNode("aggregate", aggregateAgent)
 	aggregateNode.WithInputMapper(ap.MapConcatAll())

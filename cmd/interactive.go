@@ -39,6 +39,12 @@ import (
 // Critical 修复：使用 atomic.Bool 保护并发访问
 var quitFlag atomic.Bool
 
+// promptExit 是 go-prompt 优雅退出信号，由 executor 在 /quit 时
+// panic 抛出，由 runGoPromptREPL 的 recover 捕获后正常返回。
+// 这样 runInteractive 的 defer codecastAgent.Close() 能正常执行，
+// 避免 MCP 子进程孤儿、SQLite 连接未关闭、成本数据丢失等问题。
+type promptExit struct{}
+
 // commandSuggestions 是斜杠命令的补全建议。
 var commandSuggestions []prompt.Suggest
 

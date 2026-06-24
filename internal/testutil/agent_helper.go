@@ -19,15 +19,18 @@ import (
 func NewTestAgent(t testing.TB, provider *MockProvider) (*ap.CapabilityAgent, func()) {
 	t.Helper()
 
-	agent := ap.NewAgent("test-agent", "You are a helpful test assistant.", provider,
+	agentCap, err := ap.NewAgent("test-agent", "You are a helpful test assistant.", provider,
 		ap.WithMaxTurns(5),
 	)
+	if err != nil {
+		t.Fatalf("failed to create test agent: %v", err)
+	}
 
 	cleanup := func() {
 		// No-op for now; reserved for future resource cleanup.
 	}
 
-	return agent, cleanup
+	return agentCap, cleanup
 }
 
 // NewTestSession creates a minimal ap.Session backed by a MockProvider.
@@ -42,16 +45,19 @@ func NewTestAgent(t testing.TB, provider *MockProvider) (*ap.CapabilityAgent, fu
 func NewTestSession(t testing.TB, provider *MockProvider) (*ap.Session, func()) {
 	t.Helper()
 
-	agent := ap.NewAgent("test-agent", "You are a helpful test assistant.", provider,
+	agentCap, err := ap.NewAgent("test-agent", "You are a helpful test assistant.", provider,
 		ap.WithMaxTurns(5),
 	)
+	if err != nil {
+		t.Fatalf("failed to create test agent: %v", err)
+	}
 
 	mem, err := ap.WithInMemory()
 	if err != nil {
 		t.Fatalf("failed to create in-memory store: %v", err)
 	}
 
-	sess := ap.NewSession(agent, mem)
+	sess := ap.NewSession(agentCap, mem)
 
 	cleanup := func() {
 		if mem != nil {

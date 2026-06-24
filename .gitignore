@@ -2,6 +2,7 @@ node_modules/
 dist/
 sessions/
 .env
+.env.local
 *.log
 .DS_Store
 
@@ -9,6 +10,10 @@ sessions/
 /codecast.exe
 /codecast.exe~
 /codecast_test.exe
+*.test.exe
+*.test
+coverage.out
+coverage.html
 
 # 临时测试文件
 /test-*.txt
@@ -20,4 +25,7 @@ sessions/
 
 # 运行时缓存（indexer 输出、agent 临时数据）
 /.codecast/index.json
+
+# 弃用的 TypeScript 原型（git rm -rf 后保留目录占位）
+/src/
 

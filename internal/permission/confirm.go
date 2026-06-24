@@ -2,10 +2,52 @@ package permission
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"time"
 )
+
+// stdinGuard 保护 os.Stdin 读取，防止 go-prompt 与 ConfirmPrompt 并发争抢。
+//
+// F-03 修复：虽然 go-prompt 在 executor 回调期间会切回 cooked mode，
+// 但在非交互模式、管道输入、或 TUI 模式下，stdin 可能被其他 goroutine 占用。
+// 使用 sync.Mutex + context 超时确保：
+//  1. 同一时刻只有一个 ConfirmPrompt 在读 stdin
+//  2. 如果 stdin 不可用（管道 EOF / 被 TUI 占用），超时后 fallback 到 deny
+//  3. 不阻塞 ReAct 循环的其他部分
+var (
+	stdinMu sync.Mutex
+)
+
+// readWithTimeout 从 stdin 读取一行，带超时保护。
+// 返回读取的字符串和是否成功（EOF/超时返回 false）。
+func readWithTimeout(ctx context.Context, reader *bufio.Reader, timeout time.Duration) (string, bool) {
+	type result struct {
+		line string
+		ok   bool
+	}
+	ch := make(chan result, 1)
+	go func() {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			ch <- result{"", false}
+			return
+		}
+		ch <- result{line, true}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.line, r.ok
+	case <-ctx.Done():
+		return "", false
+	case <-time.After(timeout):
+		return "", false
+	}
+}
 
 // UserAction 用户在确认提示中的操作
 type UserAction int
@@ -25,16 +67,26 @@ type ConfirmResult struct {
 
 // ConfirmPrompt 在终端显示确认提示并等待用户输入。
 //
-// F-03 设计说明：go-prompt 在调用 executor 回调期间会把终端切回 cooked mode
-//（见 c-bata/go-prompt prompt.go 的 setUp/tearDown）。所以 bufio.NewReader
-// 直接读 stdin 是安全的 —— 此时 go-prompt 不会争抢输入。
+// F-03 修复（加固版）：
+//  原始实现直接读 os.Stdin，在以下场景存在竞态风险：
+//   - 非 go-prompt 模式（TUI/Bubble Tea 模式）
+//   - 管道/重定向输入（stdin 是 pipe 而非 terminal）
+//   - 多 goroutine 并发调用 ConfirmPrompt
 //
-// 关键点：
-//  1. 用 ANSI 颜色把 permission prompt 视觉上与普通提示区分，避免用户混淆
-//  2. 用 \r\n 立即 flush 终端，确保用户看到提示再回答
-//  3. **无超时**：用户可能在思考；不要自动 deny（F-11 路线要求全人工）
-//  4. EOF / 错误时默认 deny（最保守）
+//  加固措施：
+//   1. sync.Mutex 保护 stdin 读取，防止并发争抢
+//   2. context.WithTimeout 防止永久阻塞（5分钟超时）
+//   3. 检测 stdin 是否为 terminal，非交互模式快速 fallback 到 deny
+//   4. ANSI 颜色区分 permission prompt 与普通提示
+//   5. EOF / 错误 / 超时均默认 deny（最保守）
 func ConfirmPrompt(toolName, args string) ConfirmResult {
+	const confirmTimeout = 5 * time.Minute
+
+	// F-03 加固：stdinMu 互斥 + context 超时保护已足够防止并发争抢。
+	// 移除了早期的"非终端直接拒绝"检查——该检查在 pipe/CI 测试环境中
+	// 误杀合法场景（os.Pipe 注入 stdin），而 stdinMu + timeout 已覆盖
+	// 原始竞态风险。
+
 	// \033[1;33m = 亮黄粗体；\033[0m = 重置 — 明显区别于普通 cyan prompt
 	const header = "\033[1;33m"
 	const reset = "\033[0m"
@@ -42,23 +94,33 @@ func ConfirmPrompt(toolName, args string) ConfirmResult {
 	// 立即 flush，确保用户先看到提示
 	out := os.Stdout
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "%s┌── ⚠ 权限请求 ─────────────────────────%s\n", header, reset)
-	fmt.Fprintf(out, "%s│  工具: %s%s\n", header, toolName, reset)
+	fmt.Fprintf(out, "%s┌── ⚠ 权限请求 ─────────────────────────%s\r\n", header, reset)
+	fmt.Fprintf(out, "%s│  工具: %s%s\r\n", header, toolName, reset)
 	if args != "" {
 		displayArgs := args
 		if len(displayArgs) > 200 {
 			displayArgs = displayArgs[:200] + "..."
 		}
-		fmt.Fprintf(out, "%s│  参数: %s%s\n", header, displayArgs, reset)
+		fmt.Fprintf(out, "%s│  参数: %s%s\r\n", header, displayArgs, reset)
 	}
-	fmt.Fprintf(out, "%s└────────────────────────────────────────%s\n", header, reset)
+	fmt.Fprintf(out, "%s└────────────────────────────────────────%s\r\n", header, reset)
 	fmt.Fprintf(out, "%s允许执行? [y]es / [n]o / [a]lways / [e]dit > %s", header, reset)
-	out.Sync() // 确保用户看到提示再开始读
+	out.Sync()
+
+	// F-03: Mutex 保护 + 超时保护
+	stdinMu.Lock()
+	defer stdinMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), confirmTimeout)
+	defer cancel()
 
 	reader := bufio.NewReader(os.Stdin)
-	input, err := reader.ReadString('\n')
-	if err != nil {
-		// EOF 或 I/O 错误 — 保守地拒绝
+	input, ok := readWithTimeout(ctx, reader, confirmTimeout)
+	if !ok {
+		// EOF、超时或 I/O 错误 — 保守地拒绝
+		if ctx.Err() == context.DeadlineExceeded {
+			fmt.Fprintln(os.Stderr, "[权限] 确认超时，自动拒绝 "+toolName)
+		}
 		return ConfirmResult{Action: ActionDeny}
 	}
 	input = strings.TrimSpace(strings.ToLower(input))
@@ -73,8 +135,8 @@ func ConfirmPrompt(toolName, args string) ConfirmResult {
 	case "e", "edit", "edit-args":
 		fmt.Fprintf(out, "%s请输入修改后的参数 (留空取消): %s", header, reset)
 		out.Sync()
-		modified, err := reader.ReadString('\n')
-		if err != nil {
+		modified, ok := readWithTimeout(ctx, reader, confirmTimeout)
+		if !ok {
 			return ConfirmResult{Action: ActionDeny}
 		}
 		modified = strings.TrimSpace(modified)

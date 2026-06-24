@@ -156,9 +156,12 @@ func TestE2E_BudgetExceeded(t *testing.T) {
 	provider := NewMockProvider().WithResponse("This should not be reached")
 
 	// Create an agent with very limited turns
-	agent := ap.NewAgent("budget-test", "You are a test assistant.", provider,
+	agent, err := ap.NewAgent("budget-test", "You are a test assistant.", provider,
 		ap.WithMaxTurns(1),
 	)
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
 
 	ctx := context.Background()
 	resp, err := agent.Run(ctx, ap.UserMessage("Do something"))
