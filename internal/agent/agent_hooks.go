@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	ap "agentprimordia/pkg"
 	"codecast/cli/internal/checkpoint"
@@ -22,6 +24,90 @@ import (
 	"codecast/cli/internal/tui"
 	"codecast/cli/internal/undo"
 )
+
+// buildScopeHook 构建 FileScope 路径校验 Hook（F-01 修复）。
+//
+// 问题：ap.WithFileScope(scopes) 只在 agent 元数据上存储范围信息，
+// AgentPrimordia 的 ReAct 循环和 toolkit 不会据此拦截文件路径。
+// 这意味着 LLM 可以通过 read_file / write_file / edit_file 等工具
+// 读取或修改磁盘上的任意文件。
+//
+// 修复：在 HookBeforeTool 阶段注入路径校验，对涉及 file_path/path 参数的
+// 工具调用进行 scope 范围检查。路径规范化后与允许的 scope 列表比对，
+// 不在范围内的工具调用直接拒绝。
+//
+// scope 为空列表或 ["."] 表示不限制（向后兼容）。
+func buildScopeHook(scopes []string) ap.HookFunc {
+	// 预计算每个 scope 的绝对路径，避免每次调用都做 filepath.Abs
+	var absScopes []string
+	for _, s := range scopes {
+		if abs, err := filepath.Abs(s); err == nil {
+			absScopes = append(absScopes, abs)
+		} else {
+			absScopes = append(absScopes, s)
+		}
+	}
+
+	return func(ctx context.Context, hctx *ap.HookContext) error {
+		if hctx.ToolCall == nil {
+			return nil
+		}
+
+		// 空 scopes 或只有 "." 表示不限制
+		if len(absScopes) == 0 || (len(absScopes) == 1 && absScopes[0] == ".") {
+			return nil
+		}
+
+		toolName := hctx.ToolCall.Name
+
+		// 只对文件操作类工具做路径校验
+		switch toolName {
+		case "read_file", "write_file", "edit_file", "multi_edit",
+			"delete_file", "list_files", "glob_search", "grep_search":
+			// 解析文件路径参数
+			var argsMap map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(hctx.ToolCall.Args), &argsMap); err != nil {
+				return nil // 无法解析参数时放行，由工具自身处理
+			}
+			filePath := jsonGetString(argsMap, "file_path")
+			if filePath == "" {
+				filePath = jsonGetString(argsMap, "path")
+			}
+			if filePath == "" {
+				filePath = jsonGetString(argsMap, "pattern") // glob_search 用 pattern
+			}
+			if filePath == "" {
+				return nil // 无路径参数，放行
+			}
+
+			// 规范化为绝对路径
+			absPath := filePath
+			if !filepath.IsAbs(filePath) {
+				absPath = filepath.Join(getCurrentDir(), filePath)
+			}
+			absPath = filepath.Clean(absPath)
+
+			// 检查是否在任一允许的 scope 内
+			allowed := false
+			for _, scope := range absScopes {
+				cleanScope := filepath.Clean(scope)
+				if absPath == cleanScope || strings.HasPrefix(absPath, cleanScope+string(filepath.Separator)) {
+					allowed = true
+					break
+				}
+			}
+
+			if !allowed {
+				return fmt.Errorf(
+					"🔒 文件访问被 FileScope 拒绝: 工具=%s, 路径=%s (允许的范围: %v)",
+					toolName, filePath, scopes,
+				)
+			}
+		}
+
+		return nil
+	}
+}
 
 // buildPermHook 构建权限检查 Hook。
 //

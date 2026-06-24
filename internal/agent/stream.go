@@ -244,10 +244,12 @@ func (a *CodecastAgent) SummarizeContext(ctx context.Context) error {
 		a.sessionMu.RUnlock()
 		return fmt.Errorf("session is nil")
 	}
-	history := a.session.History()
 	currentAgent := a.agent
+	sessionID := a.sessionID
 	a.sessionMu.RUnlock()
 
+	// 从底层 memory store 读取历史（避开 primordia 内部包 session.Message）
+	history := a.loadSessionHistoryAP(ctx, sessionID)
 	if len(history) <= 2 {
 		return nil // 消息太少，没有压缩必要
 	}

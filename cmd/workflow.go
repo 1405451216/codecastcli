@@ -108,7 +108,7 @@ func workflowRunParallel(prompt, agentsStr string) error {
 
 	ctx := context.Background()
 	start := time.Now()
-	result, err := ap.ParallelRun(ctx, agents, prompt, nil)
+	result, err := ap.ParallelRun(ctx, agents, prompt)
 	if err != nil {
 		return fmt.Errorf("Parallel 执行失败: %w", err)
 	}
@@ -193,9 +193,13 @@ func createWorkflowAgent(cfg *config.Config, name string, systemPrompt string) (
 		return nil, err
 	}
 
-	return ap.NewAgent(name, systemPrompt, llmProvider,
+	agent, err := ap.NewAgent(name, systemPrompt, llmProvider,
 		ap.WithMaxTurns(10),
-	), nil
+	)
+	if err != nil {
+		return nil, fmt.Errorf("创建 agent 失败: %w", err)
+	}
+	return agent, nil
 }
 
 // getSystemPromptForRole 根据角色返回系统提示词
